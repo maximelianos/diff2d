@@ -2,6 +2,7 @@
 
 Signed Distance Field is minimal distance from a point to a shape. It allows efficient compression of fonts and binary images, and also allows interesting blending of shapes.
 
+
 ## Auto differentiation
 
 <img src=diagram-20230329.svg width=800>
@@ -21,6 +22,12 @@ Bugs
 convert -delay 10 -loop 0 *.jpg myimage.gif
 
 convert *.jpg -coalesce   -duplicate 1,-2-1 -quiet -layers OptimizePlus  -loop 0 patrol_cycle.gif
+
+## Derivative
+
+$$ I_{ijc} = 1 \cdot step_1 * RGB_{c1} + \\ (1-step_1) step_2 * RGB_{c2} + \\ (1-(1-step_1)step_2)step_3 * RGB_{c3} + \ldots $$
+$$ \frac{dI_{ijc}}{dstep_1} = wstep_1 (1\cdot RGB_{c1} + (-step_2)\cdot S_2 ) $$
+$$ S_2 = 1\cdot RGB_{c2} + (-step_3)RGB_{c3} + (-step_3)(-step_4)RGB_{c4} +\ldots + (-step_3)(-step_4)\ldots (-step_n)RGB_{cn} $$
 
 ## References
 Interior mutability

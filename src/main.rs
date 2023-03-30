@@ -147,7 +147,7 @@ impl Shape {
         return sdf;
     }
 
-    fn w(&mut self, point: Point) -> f32 {
+    fn distance_alpha(&mut self, point: Point) -> f32 {
         let sdf = self.distance_pre(point);
         return smoothstep(0., self.th, -sdf);
     }
@@ -317,8 +317,8 @@ fn small(scene: SceneType, save_path: &str) {
         //let b = (yf / imgy as f32 * 128.0) as u8;
 
         let p: Point = Point::new(xf, yf);
-        let alpha1 = circ.w(p);
-        let alpha2 = circ2.w(p);
+        let alpha1 = circ.distance_alpha(p);
+        let alpha2 = circ2.distance_alpha(p);
         let w1 = 1. * alpha1;
         let w2 = (1. - w1) * alpha2;
         
@@ -335,6 +335,7 @@ fn small(scene: SceneType, save_path: &str) {
     start_time = Instant::now();
 
     // Save the image as “fractal.png”, the format is deduced from the path
+    std::fs::create_dir("anim");
     imgbuf.save("anim/reference.jpg").unwrap();
 
     // ******************** BACKWARD PASS
@@ -348,6 +349,7 @@ fn small(scene: SceneType, save_path: &str) {
         C: Point::new(-0.2, -0.2),
         r: 0.1,
         th: th,
+        color: yellow,
         ..Default::default()
     };
 
@@ -356,13 +358,24 @@ fn small(scene: SceneType, save_path: &str) {
         C: Point::new(0.1, 0.15),
         r: 0.3,
         th: th,
+        color: yellow,
         ..Default::default()
     };
 
 
+    let mut shapes: Vec<Shape> = Vec::new();
+    shapes.push(circ);
+    shapes.push(circ2);
+    let nshapes = shapes.len();
 
+    // alpha = smoothstep(-sdf)
+    let mut alpha: Vec<f32> = vec![0.; nshapes];
+    // color = sum(weight_i * color_i)
+    let mut weight_step: Vec<f32> = vec![0.; nshapes];
+    // compute d pixel/d smoothstep using postfix sum
+    let mut dstep_cum: Vec<ShapeColor> = vec![black; nshapes];
 
-    for _it in 0..50 {
+    for _it in 0..20 {
         // let mut msed = Dp::const_f(0.);
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
@@ -373,22 +386,20 @@ fn small(scene: SceneType, save_path: &str) {
 
             // again forward pass
             let p: Point = Point::new(xf, yf);
+            let mut out_color = black;
 
             // let sdf = circ.distance(p);
             // let w = smoothstep(0., th, -sdf);
-            let w1 = circ.w(p);
-            let w2 = circ2.w(p);
-
-            let w;
-            if circ.sdf < circ2.sdf {
-                w = w1;
-            } else {
-                w = w2;
+            for i in 0..nshapes {
+                alpha[i] = shapes[i].distance_alpha(p);
+                if i == 0 {
+                    weight_step[i] = 1.;
+                } else {
+                    weight_step[i] = 1. - weight_step[i - 1] * alpha[i - 1];
+                }
+                out_color = out_color + shapes[i].color * (weight_step[i] * alpha[i]);
             }
 
-            
-
-            let mut out_color = yellow * w;
 
             // mse, derivative
             let pix: [u8; 4] = refimg.get_pixel(x, y).0;
@@ -404,24 +415,28 @@ fn small(scene: SceneType, save_path: &str) {
                 + (out_color.g - rgbref[1]).powf(2.)
                 + (out_color.b - rgbref[2]).powf(2.)
             );
-            
-            let dldw = 2. * (
-                  (out_color.r - rgbref[0]) * yellow.r
-                + (out_color.g - rgbref[1]) * yellow.g
-                + (out_color.b - rgbref[2]) * yellow.b
-            );
-            // if x%10==0 && y%10==0 {
-            //     println!("{}", dwdsdf); 
-            // }
 
-            if circ.sdf < circ2.sdf {
-                circ.backward(p, dldw);
-            } else {
-                circ2.backward(p, dldw);
+            // compute postfix sums from end to begin for d pixel/d smoothstep
+            dstep_cum[nshapes-1] = shapes[nshapes-1].color;
+            for i in 1..nshapes {
+                let j = nshapes - i - 1;
+                // had to derive this formula
+                dstep_cum[j] = shapes[j].color + dstep_cum[j+1] * (-alpha[j+1]);
+            }
+
+            // pass derivative to each shape
+            for i in 0..nshapes {
+                // 3 components in derivative: rgb
+                let dstep = dstep_cum[i] * weight_step[i];
+                let dldw = 2. * (
+                    (out_color.r - rgbref[0]) * dstep.r
+                  + (out_color.g - rgbref[1]) * dstep.g
+                  + (out_color.b - rgbref[2]) * dstep.b
+                );
+                shapes[i].backward(p, dldw);
             }
             
             mse += pixmse;
-            // dr += -pixmse_d * smoothstep_d(0., th, -r) * (-1.) * (-1.);
 
             
             out_color = out_color * 255.;
@@ -431,10 +446,13 @@ fn small(scene: SceneType, save_path: &str) {
                 out_color.b as u8]);
         }
         mse = mse / imgx as f32  / imgy as f32;
-        println!("mse={:.3} r={:.3} dr={:.3} C={:?}", mse, circ.r, circ.dr, circ2.C);
+        // println!("mse={:.3} r={:.3} dr={:.3} C={:?}", mse, circ.r, circ.dr, circ2.C);
         let lr = 0.01;
-        circ.step(lr);
-        circ2.step(lr);
+        for i in 0..nshapes {
+            shapes[i].step(lr);
+        }
+        // circ.step(lr);
+        // circ2.step(lr);
         
         
         let filename: String = format!("anim/{}{:0>2}.jpg", save_path, _it);
@@ -449,15 +467,15 @@ fn small(scene: SceneType, save_path: &str) {
 
 
 fn main() {
-    let guard = pprof::ProfilerGuardBuilder::default().frequency(1000).blocklist(&["libc", "libgcc", "pthread", "vdso"]).build().unwrap();
+    // let guard = pprof::ProfilerGuardBuilder::default().frequency(1000).blocklist(&["libc", "libgcc", "pthread", "vdso"]).build().unwrap();
     small(SceneType::All, "fractal");
-    // test_autodif();
-    if let Ok(report) = guard.report().build() {
-        let file = File::create("flamegraph.svg").unwrap();
-        let mut options = pprof::flamegraph::Options::default();
-        options.image_width = Some(2500);
-        report.flamegraph_with_options(file, &mut options).unwrap();
-    };
+
+    // if let Ok(report) = guard.report().build() {
+    //     let file = File::create("flamegraph.svg").unwrap();
+    //     let mut options = pprof::flamegraph::Options::default();
+    //     options.image_width = Some(2500);
+    //     report.flamegraph_with_options(file, &mut options).unwrap();
+    // };
     
     return;
 }
