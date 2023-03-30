@@ -2,100 +2,15 @@
 #![allow(warnings)]
 mod loadsdf;
 mod libdif;
+mod libgeom;
 mod hashmap;
 use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap}, time::Instant, rc::Rc, cell::RefCell, borrow::Borrow, fs::File};
 
 use grid::Grid;
 use image::{GrayImage, GenericImageView};
-use libdif::{DGraph, Graph, Dp, GRAPH};
+//use libdif::{DGraph, Graph, Dp, GRAPH};
 
-type df32 = Dp;
-
-#[derive(Default, Debug, Clone, Copy)]
-struct Point {
-    x: df32,
-    y: df32
-}
-
-impl Point {
-    fn const_f(x: f32, y: f32) -> Point {
-        return Point{
-            x: Dp::const_f(x), 
-            y: Dp::const_f(y)
-        };
-    }
-
-    fn var_f(x: f32, y: f32) -> Point {
-        return Point{
-            x: Dp::var_f(x), 
-            y: Dp::var_f(y)
-        };
-    }
-
-    fn len(&self) -> df32 {
-        // sqrt here causes numerical instability, clip
-        let r = self.x * self.x + self.y * self.y;
-        if r.obj().scalar < 0.001 { return Dp::const_f(0.); }
-        else { return r.sqrt(); }
-    }
-
-    fn dot(&self, b: &Point) -> df32 {
-        return self.x * b.x + self.y * b.y;
-    }
-
-    fn cross(&self, b: &Point) -> df32 {
-        return self.x * b.y - b.x * self.y;
-    }
-
-    fn proj(&self, b: &Point) -> df32 {
-        return self.dot(b) / self.len();
-    }
-
-    fn rotate(&self, alpha: f32) -> Point {
-        let acos = Dp::const_f(alpha.cos());
-        let asin = Dp::const_f(alpha.sin());
-        return Point {
-            x: self.x * acos - self.y * asin,
-            y: self.x * asin + self.y * acos // TODO derive wrt angle
-        };
-    }
-}
-
-impl ops::Add<&Point> for &Point {
-    type Output = Point;
-
-    fn add(self, _rhs: &Point) -> Point {
-        //println!("> Point.add(Point) was called");
-        return Point {x: self.x + _rhs.x, y: self.y + _rhs.y};
-    }
-}
-
-impl ops::Mul<f32> for &Point {
-    type Output = Point;
-
-    fn mul(self, _rhs: f32) -> Point {
-        let a = Dp::const_f(_rhs);
-        return Point {x: self.x * a, y: self.y * a};
-    }
-}
-
-impl ops::Neg for &Point {
-    type Output = Point;
-
-    fn neg(self) -> Point {
-        //println!("> Point.neg() was called");
-        return Point{x: -self.x, y: -self.y};
-    }
-}
-
-impl ops::Sub<Point> for Point {
-    type Output = Point;
-
-    fn sub(self, _rhs: Point) -> Point {
-        //println!("> Point.sub(Point) was called");
-        return Point {x: self.x - _rhs.x, y: self.y - _rhs.y};
-    }
-}
+use libgeom::Point;
 
 // struct ShapeTransform {
 //     scale: f32,
@@ -133,13 +48,20 @@ enum ShapeType {
 #[derive(Default)]
 struct Shape {
     stype: ShapeType,
-    // circle requires C
+    // circle
     C: Point,
-    r: df32,
+    r: f32,
+    th: f32,
+    // tmp forward
+    p_len: f32,
+    sdf: f32,
+
     // rect
-    w: df32,
-    h: df32,
-    sdf: df32
+    // w: df32,
+    // h: df32,
+    
+    dr: f32,
+    dC: Point
 }
 
 #[derive(Default, Copy, Clone, Debug, PartialEq)]
@@ -183,54 +105,65 @@ impl ops::Mul<f32> for ShapeColor {
 
 
 impl Shape {
-    fn distance_pre(&self, point: Point) -> df32 {
+    fn distance_pre(&mut self, point: Point) -> f32 {
         use ShapeType::*;
         // transform is inverse: global space -> local space -> object space
         // let p = self.local_transform.apply(self.transform.apply(point));
         let p = point;
+        let sdf;
         match self.stype {
             Circle => {
-                return (p - self.C).len() - self.r;
+                self.p_len = (p - self.C).len();
+                sdf = self.p_len - self.r;
             },
-            Rectangle => {
-                let _2 = Dp::const_f(2.0);
-                let w2 = self.w / _2;
-                let h2 = self.h / _2;
+            // Rectangle => {
+            //     let _2 = Dp::const_f(2.0);
+            //     let w2 = self.w / _2;
+            //     let h2 = self.h / _2;
 
-                let d1 = p.y.abs() - h2;
-                let d2 = p.x.abs() - w2;
-                if d1.s() < 0. && d2.s() < 0. {
-                    if d1.s() > d2.s() { return d1; } else { return d2; } // closest border
-                } else if -w2.s() < p.x.s() && p.x.s() < w2.s() {
-                    return d1;
-                } else if -h2.s() < p.y.s() && p.y.s() < h2.s() {
-                    return d2;
-                } else {
-                    return Point {
-                        x: p.x.abs() - w2,
-                        y: p.y.abs() - h2
-                    }.len();
-                }
-            },
-            _ => ( Dp::const_f(0.) )
+            //     let d1 = p.y.abs() - h2;
+            //     let d2 = p.x.abs() - w2;
+            //     if d1.s() < 0. && d2.s() < 0. {
+            //         if d1.s() > d2.s() { return d1; } else { return d2; } // closest border
+            //     } else if -w2.s() < p.x.s() && p.x.s() < w2.s() {
+            //         return d1;
+            //     } else if -h2.s() < p.y.s() && p.y.s() < h2.s() {
+            //         return d2;
+            //     } else {
+            //         return Point {
+            //             x: p.x.abs() - w2,
+            //             y: p.y.abs() - h2
+            //         }.len();
+            //     }
+            // },
+            _ => panic!("Unimplemented shape")
         }
+        self.sdf = sdf;
+        return sdf;
     }
 
-    fn distance(&self, point: Point) -> df32 {
-        return self.distance_pre(point);
+    fn w(&mut self, point: Point) -> f32 {
+        let sdf = self.distance_pre(point);
+        return smoothstep(0., self.th, -sdf);
+    }
+
+    fn backward(&mut self, point: Point, dldw: f32) {
+        let dldsdf = dldw * smoothstep_d(0., self.th, -self.sdf) * (-1.);
+
+        self.dr = self.dr - dldsdf;
+        if self.p_len > 0.00001 { // avoid div by 0
+            self.dC = self.dC + (-point + self.C) * (1. / self.p_len) * dldsdf * 10.;
+        }
     }
 
     fn step(&mut self, lr: f32) {
         use ShapeType::*;
         match self.stype {
             Circle => {
-                let x = self.C.x.obj();
-                let y = self.C.y.obj();
-                self.C.x.set(x.scalar - x.scalar_d*lr, 0.);
-                self.C.y.set(y.scalar - y.scalar_d*lr, 0.);
-                
-                let r = self.r.obj();
-                self.r.set(r.scalar - r.scalar_d*lr, 0.);
+                self.r = self.r - self.dr * lr;
+                self.dr = 0.;
+                self.C = self.C - self.dC * lr;
+                self.dC = Point::new(0., 0.);
             },
             _ => ()
         }
@@ -272,8 +205,32 @@ enum SceneType {
 }
 
 
-fn circle_sdf(c: Point, r: df32, p: Point) -> df32 {
+fn circle_sdf(c: Point, r: f32, p: Point) -> f32 {
     return (p - c).len() - r;
+}
+
+pub fn smoothstep(left: f32, right: f32, x: f32) -> f32 {
+    let res: f32;
+    if x < left { res = 0.; } 
+    else if x > right { res = 1.; }
+    else {
+        let y = (x - left) / (right - left);
+        res = y * y * (3. - 2. * y);
+    }
+
+    return res;
+}
+
+pub fn smoothstep_d(left: f32, right: f32, x: f32) -> f32 {
+    let res: f32;
+    if x < left { res = 0.; }
+    else if x > right { res = 0.; }
+    else {
+        let y = (x - left) / (right - left);
+        res = 6. * y * (1. - y) / (right - left);
+    }
+
+    return res;
 }
 
 
@@ -290,9 +247,22 @@ fn small(scene: SceneType, save_path: &str) {
     let imgx = 100;
     let imgy = imgx;
 
-    let circ_c: Point = Point::var_f(0., 0.);
-    let circ_r = Dp::var_f(0.5);
-    let th = 0.1;
+    let th = 0.2;
+    let mut circ = Shape {
+        stype: ShapeType::Circle,
+        C: Point::new(0.3, 0.3),
+        r: 0.1,
+        th: th,
+        ..Default::default()
+    };
+
+    let mut circ2 = Shape {
+        stype: ShapeType::Circle,
+        C: Point::new(-0.3, -0.1),
+        r: 0.2,
+        th: th,
+        ..Default::default()
+    };
 
     // Create a new ImgBuf with width: imgx and height: imgy
     let mut imgbuf = image::ImageBuffer::new(imgx, imgy);
@@ -301,31 +271,22 @@ fn small(scene: SceneType, save_path: &str) {
 
     // Iterate over the coordinates and pixels of the image
     for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
-        if x % 80 == 0 && y % 80 == 0 {
-            println!("x {} y {}", x, y);
-            {
-                let graph = GRAPH();
-                let objects = &graph.as_ref().borrow().objects;
-                println!("Object count {} free count {}", objects.len(), graph.as_ref().borrow().free_cnt());
-            }
-        }
         let xf = x as f32 / imgx as f32 - 0.5;
         let yf = y as f32 / imgy as f32 - 0.5;
         //let r = (xf / imgx as f32 * 128.0) as u8;
         //let b = (yf / imgy as f32 * 128.0) as u8;
 
-        let p: Point = Point::const_f(xf, yf);
-        let mut sdf = circle_sdf(circ_c, circ_r, p);
-        let w = (-sdf).smoothstep(0., th);
-
-        let mut out_color: ShapeColor;
-        {
-            let graph = GRAPH();
-            let objects = &graph.as_ref().borrow().objects;
-            out_color = yellow * objects[w.id].scalar;
+        let p: Point = Point::new(xf, yf);
+        let w1 = circ.w(p);
+        let w2 = circ2.w(p);
+        let w;
+        if circ.sdf < circ2.sdf {
+            w = w1;
+        } else {
+            w = w2;
         }
-        w.backward(); // delete nodes
 
+        let mut out_color = yellow * w;
         out_color = out_color * 255.;
         *pixel = image::Rgb([
             out_color.r as u8,
@@ -339,15 +300,6 @@ fn small(scene: SceneType, save_path: &str) {
     // Save the image as “fractal.png”, the format is deduced from the path
     imgbuf.save("reference.jpg").unwrap();
 
-    println!("Saving took {:?}", start_time.elapsed());
-
-    {
-        let graph = GRAPH();
-        let objects = &graph.as_ref().borrow().objects;
-        println!("Object count {} free count {}", objects.len(), graph.as_ref().borrow().free_cnt());
-    }
-    // return;
-
     // ******************** BACKWARD PASS
 
     let refimg = loadsdf::loadimage("reference.jpg");
@@ -356,20 +308,22 @@ fn small(scene: SceneType, save_path: &str) {
     // let mut circ_r = Dp::var_f(0.2);
     let mut circ = Shape {
         stype: ShapeType::Circle,
-        C: Point::var_f(0.3, 0.2),
-        r: Dp::var_f(0.1),
+        C: Point::new(-0.2, -0.2),
+        r: 0.2,
+        th: th,
         ..Default::default()
     };
 
     let mut circ2 = Shape {
         stype: ShapeType::Circle,
-        C: Point::var_f(-0.3, -0.2),
-        r: Dp::var_f(0.3),
+        C: Point::new(0.15, 0.2),
+        r: 0.3,
+        th: th,
         ..Default::default()
     };
 
 
-    for _it in 0..10 {
+    for _it in 0..20 {
         // let mut msed = Dp::const_f(0.);
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
@@ -379,227 +333,75 @@ fn small(scene: SceneType, save_path: &str) {
             //let b = (yf / imgy as f32 * 128.0) as u8;
 
             // again forward pass
-            let p: Point = Point::const_f(xf, yf);
-            // let sdf = circle_sdf(circ_c, circ_r, p);
+            let p: Point = Point::new(xf, yf);
 
-            let sdf1 = circ.distance(p);
-            let sdf2 = circ2.distance(p);
-            let sdf;
-            if sdf1.s() < sdf2.s() {
-                sdf = sdf1;
-            } else {
-                sdf = sdf2;
-            }
             // let sdf = circ.distance(p);
-            
-            // let sdf = circ.distance(p) + circ2.distance(p);
-            let w = (-sdf).smoothstep(0., th);
+            // let w = smoothstep(0., th, -sdf);
+            let w1 = circ.w(p);
+            let w2 = circ2.w(p);
+            let w;
+            if circ.sdf < circ2.sdf {
+                w = w1;
+            } else {
+                w = w2;
+            }
+
 
             // mse, derivative
-            let pixref = refimg.get_pixel(x, y);
-            let dataref = pixref.0;
-            let rd = Dp::const_f((dataref[0] as f32) / 255.);
-            let gd = Dp::const_f((dataref[1] as f32) / 255.);
-            let bd = Dp::const_f((dataref[2] as f32) / 255.);
+            let pix: [u8; 4] = refimg.get_pixel(x, y).0;
 
-            let yrd = Dp::const_f(yellow.r);
-            let ygd = Dp::const_f(yellow.g);
-            let ybd = Dp::const_f(yellow.b);
+            let rgbref: [f32; 3] = [
+                pix[0] as f32 / 255.,
+                pix[1] as f32 / 255.,
+                pix[2] as f32 / 255.,
+            ];
 
-            let pixmse_d = ((w * yrd - rd).square()
-                + (w * ygd - gd).square()
-                + (w * ybd - bd).square()
+            let pixmse = (
+                  (w * yellow.r - rgbref[0]).powf(2.)
+                + (w * yellow.g - rgbref[1]).powf(2.)
+                + (w * yellow.b - rgbref[2]).powf(2.)
             );
-            pixmse_d.backward();
-            // mse = mse + pixmse_d;
             
+            let dldw = 2. * (
+                  (w * yellow.r - rgbref[0]) * yellow.r
+                + (w * yellow.g - rgbref[1]) * yellow.g
+                + (w * yellow.b - rgbref[2]) * yellow.b
+            );
+            // if x%10==0 && y%10==0 {
+            //     println!("{}", dwdsdf); 
+            // }
 
+            if circ.sdf < circ2.sdf {
+                circ.backward(p, dldw);
+            } else {
+                circ2.backward(p, dldw);
+            }
+            
+            mse += pixmse;
             // dr += -pixmse_d * smoothstep_d(0., th, -r) * (-1.) * (-1.);
 
-            let mut out_color: ShapeColor;
-            {
-                let graph = GRAPH();
-                let mut g = graph.as_ref().borrow_mut();
-                out_color = yellow * g.objects[w.id].scalar;
-                mse += g.objects[pixmse_d.id].scalar;
-                g.clean_graph();
-            }
-
+            let mut out_color = yellow * w;
             out_color = out_color * 255.;
             *pixel = image::Rgb([
                 out_color.r as u8,
                 out_color.g as u8,
                 out_color.b as u8]);
         }
-        // let imgx_d = Dp::const_f(imgx as f32);
-        // let imgy_d = Dp::const_f(imgy as f32);
-        // mse = mse / (imgx_d * imgy_d);
-        // mse.backward();
         mse = mse / imgx as f32  / imgy as f32;
-        println!("mse={:.3}", mse);
+        println!("mse={:.3} r={:.3} dr={:.3} C={:?}", mse, circ.r, circ.dr, circ2.C);
         circ.step(0.000001);
         circ2.step(0.000001);
-
-        {
-            let graph = GRAPH();
-            let objects = &graph.as_ref().borrow().objects;
-            println!("Object count {} free count {}", objects.len(), graph.as_ref().borrow().free_cnt());
-        }
         
         
         let filename: String = format!("{}{:0>2}.jpg", save_path, _it);
         imgbuf.save(filename).unwrap();
-
     }
-
-
-
-
-
-    // for _it in 0..10 {
-    //     let mut mse = 0.;
-    //     let mut dr = 0.;
-    //     for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
-    //         let xf = x as f32 / imgx as f32 - 0.5;
-    //         let yf = y as f32 / imgy as f32 - 0.5;
-    //         //let r = (xf / imgx as f32 * 128.0) as u8;
-    //         //let b = (yf / imgy as f32 * 128.0) as u8;
-
-    //         // again forward pass
-    //         let p: Point = Point::new(xf, yf);
-    //         let mut r: f32 = circle_sdf(0., 0., circ_r, p);
-    //         let w = smoothstep(0., th, -r);
-
-    //         // mse, derivative
-    //         let dataout = pixel.0;
-
-    //         let pixref = refimg.get_pixel(x, y);
-    //         let dataref = pixref.0;
-            
-    //         let pixmse = ((dataref[0] as f32 - dataout[0] as f32).powf(2.)
-    //             + (dataref[1] as f32 - dataout[1] as f32).powf(2.)
-    //             + (dataref[2] as f32 - dataout[2] as f32).powf(2.)
-    //         ) / (255.*255.);
-    //         mse += pixmse;
-
-    //         let pixmse_d = ((dataref[0] as f32 - dataout[0] as f32)
-    //             + (dataref[1] as f32 - dataout[1] as f32)
-    //             + (dataref[2] as f32 - dataout[2] as f32)
-    //         ) / (255.*255.);
-
-    //         dr += -pixmse_d * smoothstep_d(0., th, -r) * (-1.) * (-1.);
-
-
-    //         let mut out_color = yellow * w;
-
-    //         out_color = out_color * 255.;
-    //         *pixel = image::Rgb([
-    //             out_color.r as u8,
-    //             out_color.g as u8,
-    //             out_color.b as u8]);
-    //     }
-    //     mse = mse / imgx as f32 / imgy as f32;
-    //     println!("mse={:.3} circ_r={:.3} dr={:.3}", mse, circ_r, dr);
-    //     let filename: String = format!("{}{:0>2}.jpg", save_path, _it);
-    //     imgbuf.save(filename).unwrap();
-
-    //     circ_r -= dr * 0.0001;
-    // }
-    
 
 }
 
 
 
 
-fn test_autodif() {
-    let x = Dp::var_f(2.);
-    let y = Dp::var_f(3.);
-
-    // *** Test 1
-    // let mut z = (x + y) * y * x;
-
-    // *** Test 2
-    // let mut z = (x / y).sqrt() - y;
-
-    // *** Test 3
-    // let z = x.square();
-    // let z1 = -z;
-    // let z2 = z1*z;
-    // z2.backward();
-    // {
-    //     let graph = GRAPH();
-    //     let g = graph.as_ref().borrow();
-    //     let objects = &g.objects;
-    //     println!("Graph length {:?} free {:?}", objects.len(), g.free_cnt());
-    //     println!("z2={}", objects[z2.id].scalar);
-    //     println!("dx={}", objects[x.id].scalar_d);
-    //     println!("dy={}", objects[y.id].scalar_d);
-    // }
-
-    // *** Test 4
-    let z = -x;
-    let z1 = (z+(z+(z+z)));
-    z1.backward();
-    {
-        let graph = GRAPH();
-        let g = graph.as_ref().borrow();
-        let objects = &g.objects;
-        println!("Graph length {:?} free {:?}", objects.len(), g.free_cnt());
-        println!("z2={}", objects[z1.id].scalar);
-        println!("dx={}", objects[x.id].scalar_d);
-        println!("dy={}", objects[y.id].scalar_d);
-    }
-    
-
-    // *** Test smoothstep
-    // let x1 = Dp::none_float(-0.1);
-    // let z1 = x1.smoothstep(0., 1.);
-    // let x2 = Dp::none_float(0.3);
-    // let z2 = x2.smoothstep(0., 1.);
-    // let x3 = Dp::none_float(1.1);
-    // let z3 = x3.smoothstep(0., 1.);
-    // z1.backward();
-    // z2.backward();
-    // z3.backward();
-    // {
-    //     let graph = GRAPH();
-    //     let objects = &graph.as_ref().borrow().objects;
-    //     println!("Graph length {:?}", objects.len());
-    //     println!("z1={} z2={} z3={}", objects[z1.id].scalar, objects[z2.id].scalar, objects[z3.id].scalar);
-    //     println!("dx1={} dx2={} dx3={}", objects[x1.id].scalar_d, objects[x2.id].scalar_d, objects[x3.id].scalar_d);
-    // }
-
-
-    // *** Performance test
-    // for i in 0..100 {
-    //     z = z + x;
-    // }
-    // z.backward();
-    
-
-    // *** Test node cleanup
-    // {
-    //     let graph = GRAPH();
-    //     let g = graph.as_ref().borrow();
-    //     let objects = &g.objects;
-    //     println!("Graph length {:?} free {:?}", objects.len(), g.free_cnt());
-    //     println!("z={}", objects[z.id].scalar);
-    //     println!("dx={}", objects[x.id].scalar_d);
-    //     println!("dy={}", objects[y.id].scalar_d);
-    // }
-    // let mut z = (x / y).sqrt() - y;
-    // z.backward();
-    // {
-    //     let graph = GRAPH();
-    //     let g = graph.as_ref().borrow();
-    //     let objects = &g.objects;
-    //     println!("Graph length {:?} free {:?}", objects.len(), g.free_cnt());
-    //     println!("z={}", objects[z.id].scalar);
-    //     println!("dx={}", objects[x.id].scalar_d);
-    //     println!("dy={}", objects[y.id].scalar_d);
-    // }
-}
 
 
 fn main() {

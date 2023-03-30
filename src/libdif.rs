@@ -403,3 +403,185 @@ pub fn GRAPH() -> Graph {
     });
     return ptr;
 }
+
+
+fn test_autodif() {
+    let x = Dp::var_f(2.);
+    let y = Dp::var_f(3.);
+
+    // *** Test 1
+    // let mut z = (x + y) * y * x;
+
+    // *** Test 2
+    // let mut z = (x / y).sqrt() - y;
+
+    // *** Test 3
+    // let z = x.square();
+    // let z1 = -z;
+    // let z2 = z1*z;
+    // z2.backward();
+    // {
+    //     let graph = GRAPH();
+    //     let g = graph.as_ref().borrow();
+    //     let objects = &g.objects;
+    //     println!("Graph length {:?} free {:?}", objects.len(), g.free_cnt());
+    //     println!("z2={}", objects[z2.id].scalar);
+    //     println!("dx={}", objects[x.id].scalar_d);
+    //     println!("dy={}", objects[y.id].scalar_d);
+    // }
+
+    // *** Test 4
+    // let z = -x;
+    // let z1 = (z+(z+(z+z)));
+    // z1.backward();
+    // {
+    //     let graph = GRAPH();
+    //     let g = graph.as_ref().borrow();
+    //     let objects = &g.objects;
+    //     println!("Graph length {:?} free {:?}", objects.len(), g.free_cnt());
+    //     println!("z2={}", objects[z1.id].scalar);
+    //     println!("dx={}", objects[x.id].scalar_d);
+    //     println!("dy={}", objects[y.id].scalar_d);
+    // }
+    
+
+    // *** Test smoothstep
+    // let x1 = Dp::none_float(-0.1);
+    // let z1 = x1.smoothstep(0., 1.);
+    // let x2 = Dp::none_float(0.3);
+    // let z2 = x2.smoothstep(0., 1.);
+    // let x3 = Dp::none_float(1.1);
+    // let z3 = x3.smoothstep(0., 1.);
+    // z1.backward();
+    // z2.backward();
+    // z3.backward();
+    // {
+    //     let graph = GRAPH();
+    //     let objects = &graph.as_ref().borrow().objects;
+    //     println!("Graph length {:?}", objects.len());
+    //     println!("z1={} z2={} z3={}", objects[z1.id].scalar, objects[z2.id].scalar, objects[z3.id].scalar);
+    //     println!("dx1={} dx2={} dx3={}", objects[x1.id].scalar_d, objects[x2.id].scalar_d, objects[x3.id].scalar_d);
+    // }
+
+
+    // *** Performance test
+    // for i in 0..100 {
+    //     z = z + x;
+    // }
+    // z.backward();
+    
+
+    // *** Test node cleanup
+    // {
+    //     let graph = GRAPH();
+    //     let g = graph.as_ref().borrow();
+    //     let objects = &g.objects;
+    //     println!("Graph length {:?} free {:?}", objects.len(), g.free_cnt());
+    //     println!("z={}", objects[z.id].scalar);
+    //     println!("dx={}", objects[x.id].scalar_d);
+    //     println!("dy={}", objects[y.id].scalar_d);
+    // }
+    // let mut z = (x / y).sqrt() - y;
+    // z.backward();
+    // {
+    //     let graph = GRAPH();
+    //     let g = graph.as_ref().borrow();
+    //     let objects = &g.objects;
+    //     println!("Graph length {:?} free {:?}", objects.len(), g.free_cnt());
+    //     println!("z={}", objects[z.id].scalar);
+    //     println!("dx={}", objects[x.id].scalar_d);
+    //     println!("dy={}", objects[y.id].scalar_d);
+    // }
+}
+
+
+
+
+
+// ************************ Point with differentiable coordinates
+
+#[derive(Default, Debug, Clone, Copy)]
+struct Point {
+    x: Dp,
+    y: Dp
+}
+
+impl Point {
+    fn const_f(x: f32, y: f32) -> Point {
+        return Point{
+            x: Dp::const_f(x), 
+            y: Dp::const_f(y)
+        };
+    }
+
+    fn var_f(x: f32, y: f32) -> Point {
+        return Point{
+            x: Dp::var_f(x), 
+            y: Dp::var_f(y)
+        };
+    }
+
+    fn len(&self) -> Dp {
+        // sqrt here causes numerical instability, clip
+        let r = self.x * self.x + self.y * self.y;
+        if r.obj().scalar < 0.001 { return Dp::const_f(0.); }
+        else { return r.sqrt(); }
+    }
+
+    fn dot(&self, b: &Point) -> Dp {
+        return self.x * b.x + self.y * b.y;
+    }
+
+    fn cross(&self, b: &Point) -> Dp {
+        return self.x * b.y - b.x * self.y;
+    }
+
+    fn proj(&self, b: &Point) -> Dp {
+        return self.dot(b) / self.len();
+    }
+
+    fn rotate(&self, alpha: f32) -> Point {
+        let acos = Dp::const_f(alpha.cos());
+        let asin = Dp::const_f(alpha.sin());
+        return Point {
+            x: self.x * acos - self.y * asin,
+            y: self.x * asin + self.y * acos // TODO derive wrt angle
+        };
+    }
+}
+
+impl ops::Add<&Point> for &Point {
+    type Output = Point;
+
+    fn add(self, _rhs: &Point) -> Point {
+        //println!("> Point.add(Point) was called");
+        return Point {x: self.x + _rhs.x, y: self.y + _rhs.y};
+    }
+}
+
+impl ops::Mul<f32> for &Point {
+    type Output = Point;
+
+    fn mul(self, _rhs: f32) -> Point {
+        let a = Dp::const_f(_rhs);
+        return Point {x: self.x * a, y: self.y * a};
+    }
+}
+
+impl ops::Neg for &Point {
+    type Output = Point;
+
+    fn neg(self) -> Point {
+        //println!("> Point.neg() was called");
+        return Point{x: -self.x, y: -self.y};
+    }
+}
+
+impl ops::Sub<Point> for Point {
+    type Output = Point;
+
+    fn sub(self, _rhs: Point) -> Point {
+        //println!("> Point.sub(Point) was called");
+        return Point {x: self.x - _rhs.x, y: self.y - _rhs.y};
+    }
+}
