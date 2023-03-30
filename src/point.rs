@@ -32,6 +32,10 @@ impl Point {
             self.x * alpha.cos() - self.y * alpha.sin(),
             self.x * alpha.sin() + self.y * alpha.cos());
     }
+
+    pub fn powf(&self, alpha: f32) -> Point {
+        return Point::new(self.x.powf(alpha), self.y.powf(alpha));
+    }
 }
 
 impl ops::Add<Point> for Point {
@@ -40,6 +44,23 @@ impl ops::Add<Point> for Point {
     fn add(self, _rhs: Point) -> Point {
         //println!("> Point.add(Point) was called");
         return Point {x: self.x + _rhs.x, y: self.y + _rhs.y};
+    }
+}
+
+impl ops::Add<f32> for Point {
+    type Output = Point;
+
+    fn add(self, _rhs: f32) -> Point {
+        //println!("> Point.add(Point) was called");
+        return Point {x: self.x + _rhs, y: self.y + _rhs};
+    }
+}
+
+impl ops::Mul<Point> for Point {
+    type Output = Point;
+
+    fn mul(self, _rhs: Point) -> Point {
+        return Point {x: self.x * _rhs.x, y: self.y * _rhs.y};
     }
 }
 
@@ -68,3 +89,6 @@ impl ops::Sub<Point> for Point {
         return Point {x: self.x - _rhs.x, y: self.y - _rhs.y};
     }
 }
+
+
+

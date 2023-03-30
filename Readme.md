@@ -1,5 +1,4 @@
 # Differentiable 2D render
-<img src=pictures/fractal0.png width=400>
 
 Signed Distance Field is minimal distance from a point to a shape. It allows efficient compression of fonts and binary images, and also allows interesting blending of shapes.
 
@@ -20,6 +19,8 @@ Bugs
 2) const values are deleted on backward and result in dangling references
 
 convert -delay 10 -loop 0 *.jpg myimage.gif
+
+convert *.jpg -coalesce   -duplicate 1,-2-1 -quiet -layers OptimizePlus  -loop 0 patrol_cycle.gif
 
 ## References
 Interior mutability

@@ -2,7 +2,7 @@
 #![allow(warnings)]
 mod loadsdf;
 mod libdif;
-mod libgeom;
+mod point;
 mod hashmap;
 use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap}, time::Instant, rc::Rc, cell::RefCell, borrow::Borrow, fs::File};
 
@@ -10,7 +10,7 @@ use grid::Grid;
 use image::{GrayImage, GenericImageView};
 //use libdif::{DGraph, Graph, Dp, GRAPH};
 
-use libgeom::Point;
+use point::Point;
 
 // struct ShapeTransform {
 //     scale: f32,
@@ -61,20 +61,25 @@ struct Shape {
     // h: df32,
     
     dr: f32,
-    dC: Point
+    drm: f32,
+    drv: f32,
+    dC: Point,
+    dCm: Point,
+    dCv: Point,
+
+    color: ShapeColor
 }
 
 #[derive(Default, Copy, Clone, Debug, PartialEq)]
 struct ShapeColor {
     r: f32,
     g: f32,
-    b: f32,
-    layer: i32,
+    b: f32
 }
 
 impl ShapeColor {
     fn new(r: i32, g: i32, b: i32) -> ShapeColor {
-        ShapeColor { r: r as f32 / 255., g: g as f32 / 255., b: b as f32 / 255., layer: 0 }
+        ShapeColor { r: r as f32 / 255., g: g as f32 / 255., b: b as f32 / 255. }
     }
 }
 
@@ -86,8 +91,8 @@ impl ops::Add<ShapeColor> for ShapeColor {
         return ShapeColor {
             r: self.r + _rhs.r,
             g: self.g + _rhs.g,
-            b: self.b + _rhs.b,
-            layer: self.layer };
+            b: self.b + _rhs.b
+        };
     }
 }
 
@@ -99,7 +104,7 @@ impl ops::Mul<f32> for ShapeColor {
             r: self.r * rhs,
             g: self.g * rhs,
             b: self.b * rhs,
-            layer: self.layer };
+        };
     }
 }
 
@@ -152,7 +157,7 @@ impl Shape {
 
         self.dr = self.dr - dldsdf;
         if self.p_len > 0.00001 { // avoid div by 0
-            self.dC = self.dC + (-point + self.C) * (1. / self.p_len) * dldsdf * 10.;
+            self.dC = self.dC + (-point + self.C) * (1. / self.p_len) * dldsdf * 50.;
         }
     }
 
@@ -160,9 +165,43 @@ impl Shape {
         use ShapeType::*;
         match self.stype {
             Circle => {
-                self.r = self.r - self.dr * lr;
+                // ** Adam
+                let beta1 = 0.9;
+                let beta2 = 0.999;
+                let k = 1.;
+                let eps = 1e-8;
+
+                self.drm = self.drm * beta1 + self.dr * (1. - beta1);
+                self.drv = self.drv * beta2 + self.dr * self.dr * (1. - beta2);
+                let m_unbias = self.drm / (1. - beta1.powf(k));
+                let v_unbias = self.drv / (1. - beta2.powf(k));
+                let grad = m_unbias / ( v_unbias.powf(0.5) + eps );
+                self.r = self.r - grad * lr;
+
+
+                // ** SGD momentum
+                // self.drm = self.drm * 0.2 + self.dr * 0.8;
+                // self.r = self.r - self.dr * lr;
+
+                // ** SGD
+                // self.r = self.r - self.dr * lr;
                 self.dr = 0.;
-                self.C = self.C - self.dC * lr;
+
+                
+                // ** Adam
+                self.dCm = self.dCm * beta1 + self.dC * (1. - beta1);
+                self.dCv = self.dCv * beta2 + self.dC * self.dC * (1. - beta2);
+                let m_unbias = self.dCm * (1. / (1. - beta1.powf(k)));
+                let v_unbias = self.dCv * (1. / (1. - beta2.powf(k)));
+                let grad = m_unbias * ( v_unbias.powf(0.5) + eps ).powf(-1.);
+                self.C = self.C - grad * lr;
+                
+                // ** SGD momentum
+                // self.dCm = self.dCm * 0.2 + self.dC * 0.8;
+                // self.C = self.C - self.dCm * lr;
+
+                // ** SGD
+                // self.C = self.C - self.dC * lr;
                 self.dC = Point::new(0., 0.);
             },
             _ => ()
@@ -239,7 +278,8 @@ fn small(scene: SceneType, save_path: &str) {
     let mut start_time = Instant::now();
 
     let yellow = ShapeColor::new(255, 220, 3);
-    let black = ShapeColor{r: 0., g: 0., b: 0., layer: 0};
+    let red = ShapeColor::new(255, 0, 0);
+    let black = ShapeColor{r: 0., g: 0., b: 0.};
     
     println!("Initialization took {:?}", start_time.elapsed());
     start_time = Instant::now();
@@ -277,16 +317,13 @@ fn small(scene: SceneType, save_path: &str) {
         //let b = (yf / imgy as f32 * 128.0) as u8;
 
         let p: Point = Point::new(xf, yf);
-        let w1 = circ.w(p);
-        let w2 = circ2.w(p);
-        let w;
-        if circ.sdf < circ2.sdf {
-            w = w1;
-        } else {
-            w = w2;
-        }
+        let alpha1 = circ.w(p);
+        let alpha2 = circ2.w(p);
+        let w1 = 1. * alpha1;
+        let w2 = (1. - w1) * alpha2;
+        
 
-        let mut out_color = yellow * w;
+        let mut out_color = yellow * w1 + yellow * w2;
         out_color = out_color * 255.;
         *pixel = image::Rgb([
             out_color.r as u8,
@@ -298,32 +335,34 @@ fn small(scene: SceneType, save_path: &str) {
     start_time = Instant::now();
 
     // Save the image as “fractal.png”, the format is deduced from the path
-    imgbuf.save("reference.jpg").unwrap();
+    imgbuf.save("anim/reference.jpg").unwrap();
 
     // ******************** BACKWARD PASS
 
-    let refimg = loadsdf::loadimage("reference.jpg");
+    let refimg = loadsdf::loadimage("anim/reference.jpg");
 
     // let mut circ_c: Point = Point::var_f(0.2, 0.);
     // let mut circ_r = Dp::var_f(0.2);
     let mut circ = Shape {
         stype: ShapeType::Circle,
         C: Point::new(-0.2, -0.2),
-        r: 0.2,
+        r: 0.1,
         th: th,
         ..Default::default()
     };
 
     let mut circ2 = Shape {
         stype: ShapeType::Circle,
-        C: Point::new(0.15, 0.2),
+        C: Point::new(0.1, 0.15),
         r: 0.3,
         th: th,
         ..Default::default()
     };
 
 
-    for _it in 0..20 {
+
+
+    for _it in 0..50 {
         // let mut msed = Dp::const_f(0.);
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
@@ -339,6 +378,7 @@ fn small(scene: SceneType, save_path: &str) {
             // let w = smoothstep(0., th, -sdf);
             let w1 = circ.w(p);
             let w2 = circ2.w(p);
+
             let w;
             if circ.sdf < circ2.sdf {
                 w = w1;
@@ -346,6 +386,9 @@ fn small(scene: SceneType, save_path: &str) {
                 w = w2;
             }
 
+            
+
+            let mut out_color = yellow * w;
 
             // mse, derivative
             let pix: [u8; 4] = refimg.get_pixel(x, y).0;
@@ -357,15 +400,15 @@ fn small(scene: SceneType, save_path: &str) {
             ];
 
             let pixmse = (
-                  (w * yellow.r - rgbref[0]).powf(2.)
-                + (w * yellow.g - rgbref[1]).powf(2.)
-                + (w * yellow.b - rgbref[2]).powf(2.)
+                  (out_color.r - rgbref[0]).powf(2.)
+                + (out_color.g - rgbref[1]).powf(2.)
+                + (out_color.b - rgbref[2]).powf(2.)
             );
             
             let dldw = 2. * (
-                  (w * yellow.r - rgbref[0]) * yellow.r
-                + (w * yellow.g - rgbref[1]) * yellow.g
-                + (w * yellow.b - rgbref[2]) * yellow.b
+                  (out_color.r - rgbref[0]) * yellow.r
+                + (out_color.g - rgbref[1]) * yellow.g
+                + (out_color.b - rgbref[2]) * yellow.b
             );
             // if x%10==0 && y%10==0 {
             //     println!("{}", dwdsdf); 
@@ -380,7 +423,7 @@ fn small(scene: SceneType, save_path: &str) {
             mse += pixmse;
             // dr += -pixmse_d * smoothstep_d(0., th, -r) * (-1.) * (-1.);
 
-            let mut out_color = yellow * w;
+            
             out_color = out_color * 255.;
             *pixel = image::Rgb([
                 out_color.r as u8,
@@ -389,11 +432,12 @@ fn small(scene: SceneType, save_path: &str) {
         }
         mse = mse / imgx as f32  / imgy as f32;
         println!("mse={:.3} r={:.3} dr={:.3} C={:?}", mse, circ.r, circ.dr, circ2.C);
-        circ.step(0.000001);
-        circ2.step(0.000001);
+        let lr = 0.01;
+        circ.step(lr);
+        circ2.step(lr);
         
         
-        let filename: String = format!("{}{:0>2}.jpg", save_path, _it);
+        let filename: String = format!("anim/{}{:0>2}.jpg", save_path, _it);
         imgbuf.save(filename).unwrap();
     }
 
