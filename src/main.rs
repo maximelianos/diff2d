@@ -3,7 +3,7 @@
 mod loadsdf;
 mod libdif;
 mod hashmap;
-use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap}, time::Instant, rc::Rc, cell::RefCell, borrow::Borrow};
+use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap}, time::Instant, rc::Rc, cell::RefCell, borrow::Borrow, fs::File};
 
 use grid::Grid;
 use image::{GrayImage, GenericImageView};
@@ -33,7 +33,10 @@ impl Point {
     }
 
     fn len(&self) -> df32 {
-        return (self.x * self.x + self.y * self.y).sqrt();
+        // sqrt here causes numerical instability, clip
+        let r = self.x * self.x + self.y * self.y;
+        if r.obj().scalar < 0.001 { return Dp::const_f(0.); }
+        else { return r.sqrt(); }
     }
 
     fn dot(&self, b: &Point) -> df32 {
@@ -94,6 +97,51 @@ impl ops::Sub<Point> for Point {
     }
 }
 
+// struct ShapeTransform {
+//     scale: f32,
+//     rotate: f32, // in radians
+//     translate: Point
+// }
+
+// impl Default for ShapeTransform {
+//     fn default() -> Self { Self{scale: 1., rotate: 0., translate: Point::new(0., 0.)} }
+// }
+
+// impl ShapeTransform {
+//     fn apply(&self, p: Point) -> Point {
+//         // apply same transform to translation vector
+//         let translate = self.translate; //(self.translate * (1./self.scale)).rotate(-self.rotate);
+//         // transform in reverse order
+//         let mut q = p - translate;
+//         q = q.rotate(-self.rotate);
+//         q = q * (1./self.scale);
+//         return q;
+//     }
+// }
+
+#[derive(Default, Copy, Clone, Debug, PartialEq)]
+enum ShapeType {
+    #[default]
+    Circle,
+    
+    Rectangle,
+    Triangle,
+    LineSegment,
+    Bitmap
+}
+
+#[derive(Default)]
+struct Shape {
+    stype: ShapeType,
+    // circle requires C
+    C: Point,
+    r: df32,
+    // rect
+    w: df32,
+    h: df32,
+    sdf: df32
+}
+
 #[derive(Default, Copy, Clone, Debug, PartialEq)]
 struct ShapeColor {
     r: f32,
@@ -130,6 +178,62 @@ impl ops::Mul<f32> for ShapeColor {
             g: self.g * rhs,
             b: self.b * rhs,
             layer: self.layer };
+    }
+}
+
+
+impl Shape {
+    fn distance_pre(&self, point: Point) -> df32 {
+        use ShapeType::*;
+        // transform is inverse: global space -> local space -> object space
+        // let p = self.local_transform.apply(self.transform.apply(point));
+        let p = point;
+        match self.stype {
+            Circle => {
+                return (p - self.C).len() - self.r;
+            },
+            Rectangle => {
+                let _2 = Dp::const_f(2.0);
+                let w2 = self.w / _2;
+                let h2 = self.h / _2;
+
+                let d1 = p.y.abs() - h2;
+                let d2 = p.x.abs() - w2;
+                if d1.s() < 0. && d2.s() < 0. {
+                    if d1.s() > d2.s() { return d1; } else { return d2; } // closest border
+                } else if -w2.s() < p.x.s() && p.x.s() < w2.s() {
+                    return d1;
+                } else if -h2.s() < p.y.s() && p.y.s() < h2.s() {
+                    return d2;
+                } else {
+                    return Point {
+                        x: p.x.abs() - w2,
+                        y: p.y.abs() - h2
+                    }.len();
+                }
+            },
+            _ => ( Dp::const_f(0.) )
+        }
+    }
+
+    fn distance(&self, point: Point) -> df32 {
+        return self.distance_pre(point);
+    }
+
+    fn step(&mut self, lr: f32) {
+        use ShapeType::*;
+        match self.stype {
+            Circle => {
+                let x = self.C.x.obj();
+                let y = self.C.y.obj();
+                self.C.x.set(x.scalar - x.scalar_d*lr, 0.);
+                self.C.y.set(y.scalar - y.scalar_d*lr, 0.);
+                
+                let r = self.r.obj();
+                self.r.set(r.scalar - r.scalar_d*lr, 0.);
+            },
+            _ => ()
+        }
     }
 }
 
@@ -183,7 +287,7 @@ fn small(scene: SceneType, save_path: &str) {
     println!("Initialization took {:?}", start_time.elapsed());
     start_time = Instant::now();
 
-    let imgx = 400;
+    let imgx = 100;
     let imgy = imgx;
 
     let circ_c: Point = Point::var_f(0., 0.);
@@ -248,11 +352,25 @@ fn small(scene: SceneType, save_path: &str) {
 
     let refimg = loadsdf::loadimage("reference.jpg");
 
-    let mut circ_c: Point = Point::var_f(0., 0.);
-    let mut circ_r = Dp::var_f(0.2);
+    // let mut circ_c: Point = Point::var_f(0.2, 0.);
+    // let mut circ_r = Dp::var_f(0.2);
+    let mut circ = Shape {
+        stype: ShapeType::Circle,
+        C: Point::var_f(0.3, 0.2),
+        r: Dp::var_f(0.1),
+        ..Default::default()
+    };
+
+    let mut circ2 = Shape {
+        stype: ShapeType::Circle,
+        C: Point::var_f(-0.3, -0.2),
+        r: Dp::var_f(0.3),
+        ..Default::default()
+    };
+
 
     for _it in 0..10 {
-        //let mut mse = Dp::const_f(0.);
+        // let mut msed = Dp::const_f(0.);
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
             let xf = x as f32 / imgx as f32 - 0.5;
@@ -262,7 +380,19 @@ fn small(scene: SceneType, save_path: &str) {
 
             // again forward pass
             let p: Point = Point::const_f(xf, yf);
-            let sdf = circle_sdf(circ_c, circ_r, p);
+            // let sdf = circle_sdf(circ_c, circ_r, p);
+
+            let sdf1 = circ.distance(p);
+            let sdf2 = circ2.distance(p);
+            let sdf;
+            if sdf1.s() < sdf2.s() {
+                sdf = sdf1;
+            } else {
+                sdf = sdf2;
+            }
+            // let sdf = circ.distance(p);
+            
+            // let sdf = circ.distance(p) + circ2.distance(p);
             let w = (-sdf).smoothstep(0., th);
 
             // mse, derivative
@@ -289,9 +419,10 @@ fn small(scene: SceneType, save_path: &str) {
             let mut out_color: ShapeColor;
             {
                 let graph = GRAPH();
-                let objects = &graph.as_ref().borrow().objects;
-                out_color = yellow * objects[w.id].scalar;
-                mse += objects[pixmse_d.id].scalar;
+                let mut g = graph.as_ref().borrow_mut();
+                out_color = yellow * g.objects[w.id].scalar;
+                mse += g.objects[pixmse_d.id].scalar;
+                g.clean_graph();
             }
 
             out_color = out_color * 255.;
@@ -305,24 +436,15 @@ fn small(scene: SceneType, save_path: &str) {
         // mse = mse / (imgx_d * imgy_d);
         // mse.backward();
         mse = mse / imgx as f32  / imgy as f32;
+        println!("mse={:.3}", mse);
+        circ.step(0.000001);
+        circ2.step(0.000001);
 
-
-        let new_r;
         {
             let graph = GRAPH();
             let objects = &graph.as_ref().borrow().objects;
             println!("Object count {} free count {}", objects.len(), graph.as_ref().borrow().free_cnt());
-
-            let dr: f32 = objects[circ_r.id].scalar_d;
-            println!("mse={:.3} circ_r={:.3} dr={:.3}", 
-                mse, 
-                objects[circ_r.id].scalar,
-                dr
-            );
-
-            new_r = objects[circ_r.id].scalar - dr * 0.0000001;
         }
-        circ_r = Dp::var_f(new_r);
         
         
         let filename: String = format!("{}{:0>2}.jpg", save_path, _it);
@@ -481,8 +603,15 @@ fn test_autodif() {
 
 
 fn main() {
+    let guard = pprof::ProfilerGuardBuilder::default().frequency(1000).blocklist(&["libc", "libgcc", "pthread", "vdso"]).build().unwrap();
     small(SceneType::All, "fractal");
     // test_autodif();
+    if let Ok(report) = guard.report().build() {
+        let file = File::create("flamegraph.svg").unwrap();
+        let mut options = pprof::flamegraph::Options::default();
+        options.image_width = Some(2500);
+        report.flamegraph_with_options(file, &mut options).unwrap();
+    };
     
     return;
 }

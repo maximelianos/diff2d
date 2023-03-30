@@ -12,7 +12,7 @@ enum Dtype {
     MATRIX
 }
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 enum OpType {
     #[default]
     Const,
@@ -25,6 +25,7 @@ enum OpType {
     ScSqrt,
     ScSquare,
     ScSmoothstep,
+    ScAbs
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -45,6 +46,7 @@ pub struct D {
 pub struct Dp {
     //pub Rc<RefCell<D>> // borrow here breaks everything
     pub id: usize,
+    pub print: bool
     // g: Graph
 } // Rc is for multiple references (but immutable), RefCell is for mutability
 
@@ -90,6 +92,7 @@ impl Dp {
             ScNeg => { res = -a.scalar; },
             ScSqrt => { res = a.scalar.powf(0.5); },
             ScSquare => { res = a.scalar.powf(2.); },
+            ScAbs => { res = a.scalar.abs() },
             _ => {
                 panic!("Unimplemented op");
             }
@@ -107,6 +110,24 @@ impl Dp {
         // println!("New result, len={}", g.objects.len());
     }
 
+    pub fn obj(&self) -> D {
+        let graph: Graph = GRAPH();
+        let mut g: RefMut<DGraph> = graph.as_ref().borrow_mut();
+        return g.objects[self.id];
+    }
+
+    pub fn s(&self) -> f32 {
+        let graph: Graph = GRAPH();
+        let mut g: RefMut<DGraph> = graph.as_ref().borrow_mut();
+        return g.objects[self.id].scalar;
+    }
+
+    pub fn set(&self, scalar: f32, scalar_d: f32) {
+        let graph: Graph = GRAPH();
+        let mut g: RefMut<DGraph> = graph.as_ref().borrow_mut();
+        g.objects[self.id].scalar = scalar;
+        g.objects[self.id].scalar_d = scalar_d;
+    }
 
 
     pub fn backward(&self) {
@@ -129,7 +150,9 @@ impl Dp {
         // *** always select object with maximum order num
         let cur_order = g.objects[cur_id].order;
         g.bfs_order.insert( (cur_order, cur_id) );
+        let mut _it = 0;
         while !g.bfs_order.is_empty() {
+            _it += 1;
             // *** current node
             let (_, cur_id) = g.bfs_order.pop_last().unwrap(); //deque.pop_front().unwrap();
             let a = g.objects[cur_id];
@@ -184,13 +207,16 @@ impl Dp {
                     
                     g.objects[i1].scalar_d += a.scalar_d * d_b1;
                 },
+                ScAbs => {
+                    g.objects[i1].scalar_d += if b1.scalar > 0. { a.scalar_d } else { -a.scalar_d };
+                },
                 _ => {
                     panic!("Unimplemented operation {:?}", a.optype);
                 }
             }
             match a.optype {
                 Const => {
-                    g.free_node(&a);
+                    g.free_node(a.id);
                 },
                 Var => (),
                 _ => { 
@@ -207,9 +233,12 @@ impl Dp {
                         g.visited[i2] = true;
                     }
                     
-                    g.free_node(&a);
+                    g.free_node(a.id);
                 }
             }
+        }
+        if self.print {
+            println!("Nodes visited in backward {}", _it);
         }
     }
 
@@ -251,6 +280,10 @@ impl Dp {
         };
         
         return g.push(c);
+    }
+
+    pub fn abs(&self) -> Dp {
+        return Dp::op_float(&self, &self, OpType::ScAbs);
     }
 }
 
@@ -303,6 +336,7 @@ pub struct DGraph {
     pub objects: Vec<D>,
     free_nodes: LinkedList<usize>,
     is_free: Vec<bool>,
+    tmp_nodes: LinkedList<usize>,
 
     // --> temporary for backward
     visited: Vec<bool>, 
@@ -310,7 +344,7 @@ pub struct DGraph {
     // <--
 
     order: usize,
-    eval: bool
+    pub eval: bool
 }
 
 impl DGraph {
@@ -336,15 +370,24 @@ impl DGraph {
             node.id = id;
             self.objects[id] = node;
         }
+
+        if node.optype != OpType::Var { self.tmp_nodes.push_back(id); }
         // println!("Create node id {}", id);
-        return Dp { id: id };
+        return Dp { id: id, ..Default::default() };
     }
 
-    fn free_node(&mut self, node: &D) {
+    fn free_node(&mut self, id: usize) {
         // println!("Free node id {}", node.id);
-        if !self.is_free[node.id] { // the vector always keeps right info
-            self.free_nodes.push_back(node.id);
-            self.is_free[node.id] = true;
+        if !self.is_free[id] { // the vector always keeps right info
+            self.free_nodes.push_back(id);
+            self.is_free[id] = true;
+        }
+    }
+
+    pub fn clean_graph(&mut self) {
+        while !self.tmp_nodes.is_empty() {
+            let id = self.tmp_nodes.pop_back().unwrap();
+            self.free_node(id);
         }
     }
 }
