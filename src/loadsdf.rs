@@ -1,4 +1,4 @@
-use image::{GrayImage};
+use image::{GrayImage, DynamicImage, GenericImageView};
 
 pub fn loadsdf(path: &str) -> GrayImage {
     // Use the open function to load an image from a Path.
@@ -24,4 +24,18 @@ pub fn loadsdf(path: &str) -> GrayImage {
 
     // return ImageBuffer, to get pixels use smth like imgbuf.get_pixel(x, y)
     return grayscale;
+}
+
+pub fn loadimage(path: &str) -> DynamicImage {
+    // Use the open function to load an image from a Path.
+    // `open` returns a `DynamicImage` on success.
+    let img = image::open(path).unwrap();
+
+    // The dimensions method returns the images width and height.
+    println!("dimensions {:?}", img.dimensions());
+
+    // The color method returns the image's `ColorType`.
+    println!("{:?}", img.color());
+
+    return img;
 }

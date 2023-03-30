@@ -5,11 +5,21 @@ Signed Distance Field is minimal distance from a point to a shape. It allows eff
 
 ## Auto differentiation
 
+<img src=diagram-20230329.svg width=800>
+
 Dtype - scalar, matrix
 OpType - +, -, *
 struct D - derivable
 struct Dp - pointer to D
 graph - computational graph
+
+700 mb per 10 000 000 objects in graph
+
+Bugs
+1) Simple BFS results in incorrect gradients
+2) const values are deleted on backward and result in dangling references
+
+convert -delay 10 -loop 0 *.jpg myimage.gif
 
 ## References
 Interior mutability
