@@ -56,16 +56,26 @@ struct Shape {
     p_len: f32,
     sdf: f32,
 
-    // rect
-    // w: df32,
-    // h: df32,
-    
     dr: f32,
     drm: f32,
     drv: f32,
     dC: Point,
     dCm: Point,
     dCv: Point,
+
+    // rect
+    w: f32,
+    h: f32,
+
+    dw: f32,
+    dwm: f32,
+    dwv: f32,
+
+    dh: f32,
+    dhm: f32,
+    dhv: f32,
+    
+    
 
     color: ShapeColor
 }
@@ -109,6 +119,7 @@ impl ops::Mul<f32> for ShapeColor {
 }
 
 
+
 impl Shape {
     fn distance_pre(&mut self, point: Point) -> f32 {
         use ShapeType::*;
@@ -121,26 +132,27 @@ impl Shape {
                 self.p_len = (p - self.C).len();
                 sdf = self.p_len - self.r;
             },
-            // Rectangle => {
-            //     let _2 = Dp::const_f(2.0);
-            //     let w2 = self.w / _2;
-            //     let h2 = self.h / _2;
+            Rectangle => {
+                let w2 = self.w / 2.;
+                let h2 = self.h / 2.;
 
-            //     let d1 = p.y.abs() - h2;
-            //     let d2 = p.x.abs() - w2;
-            //     if d1.s() < 0. && d2.s() < 0. {
-            //         if d1.s() > d2.s() { return d1; } else { return d2; } // closest border
-            //     } else if -w2.s() < p.x.s() && p.x.s() < w2.s() {
-            //         return d1;
-            //     } else if -h2.s() < p.y.s() && p.y.s() < h2.s() {
-            //         return d2;
-            //     } else {
-            //         return Point {
-            //             x: p.x.abs() - w2,
-            //             y: p.y.abs() - h2
-            //         }.len();
-            //     }
-            // },
+                let y1 = p.y.abs() - h2;
+                let x1 = p.x.abs() - w2;
+                if y1 < 0. && x1 < 0. {
+                    if y1 > x1 { sdf = y1; } else { sdf = x1; } // closest border
+                } else if -w2 < p.x && p.x < w2 {
+                    sdf = y1;
+                } else if -h2 < p.y && p.y < h2 {
+                    sdf = x1;
+                } else {
+                    let len = Point {
+                        x: x1,
+                        y: y1
+                    }.len();
+                    self.p_len = len;
+                    sdf = len;
+                }
+            },
             _ => panic!("Unimplemented shape")
         }
         self.sdf = sdf;
@@ -154,23 +166,103 @@ impl Shape {
 
     fn backward(&mut self, point: Point, dldw: f32) {
         let dldsdf = dldw * smoothstep_d(0., self.th, -self.sdf) * (-1.);
-
-        self.dr = self.dr - dldsdf;
-        if self.p_len > 0.00001 { // avoid div by 0
-            self.dC = self.dC + (-point + self.C) * (1. / self.p_len) * dldsdf * 50.;
+        let p = point;
+        unsafe {
+            if PRINT_NOW {
+                println!("SDF={}", self.sdf);
+            }
         }
+        
+
+        use ShapeType::*;
+        match self.stype {
+            Circle => {
+                self.dr = self.dr - dldsdf;
+                if self.p_len > 0.00001 { // avoid div by 0
+                    self.dC = self.dC + (-point + self.C) * (1. / self.p_len) * dldsdf * 50.;
+                }
+            },
+            Rectangle => {
+                unsafe {
+                    if PRINT_NOW {
+                        println!("Hello from rectangle! dsdf={}", dldsdf);
+                    }
+                }
+                let w2 = self.w / 2.;
+                let h2 = self.h / 2.;
+
+                let y1 = p.y.abs() - h2;
+                let x1 = p.x.abs() - w2;
+                let dw: f32;
+                let dh: f32;
+                if y1 < 0. && x1 < 0. {
+                    if y1 > x1 {
+                        dw = 0.; dh = -0.5;
+                    } else { 
+                        dw = -0.5; dh = 0.;
+                    } // closest border
+                } else if -w2 < p.x && p.x < w2 {
+                    dw = 0.; dh = -0.5;
+                } else if -h2 < p.y && p.y < h2 {
+                    dw = -0.5; dh = 0.;
+                } else {
+                    // avoid division by 0!
+                    if self.p_len > 0.00001 {
+                        dw = x1 * (-0.5) / self.p_len;
+                        dh = y1 * (-0.5) / self.p_len;
+                    } else {
+                        dw = 0.;
+                        dh = 0.;
+                    }
+                }
+                unsafe {
+                    if PRINT_NOW {
+                        println!("dw={} dh={}", dw, dh);
+                    }
+                }
+                self.dw += dw * dldsdf;
+                self.dh += dh * dldsdf;
+                unsafe {
+                    if PRINT_NOW {
+                        println!("self.dw={} dh={}", self.dw, self.dh);
+                    }
+                }
+            },
+            _ => ()
+        }
+        
     }
 
     fn step(&mut self, lr: f32) {
+        // ** Adam params
+        let beta1 = 0.9;
+        let beta2 = 0.999;
+        let k = 1.;
+        let eps = 1e-8;
+
+        macro_rules! adam_f{
+            // match like arm for macro
+               ($m:expr,$v:expr,$g:expr,$x:expr)=>{
+                // input: previous momentum, v, x, current grad 
+                // output: new momentum, v, x
+            // macro expand to this code
+                   {
+            // $a and $b will be templated using the value/variable provided to macro
+                        $m = $m * beta1 + $g * (1. - beta1);
+                        $v = $v * beta2 + $g * $g * (1. - beta2);
+                        let m_unbias = $m / (1. - beta1.powf(k));
+                        let v_unbias = $v / (1. - beta2.powf(k));
+                        let grad = m_unbias / ( v_unbias.powf(0.5) + eps );
+                        $x = $x - grad * lr;
+                   }
+               }
+           }
+
         use ShapeType::*;
         match self.stype {
             Circle => {
                 // ** Adam
-                let beta1 = 0.9;
-                let beta2 = 0.999;
-                let k = 1.;
-                let eps = 1e-8;
-
+                
                 self.drm = self.drm * beta1 + self.dr * (1. - beta1);
                 self.drv = self.drv * beta2 + self.dr * self.dr * (1. - beta2);
                 let m_unbias = self.drm / (1. - beta1.powf(k));
@@ -203,6 +295,15 @@ impl Shape {
                 // ** SGD
                 // self.C = self.C - self.dC * lr;
                 self.dC = Point::new(0., 0.);
+            },
+            Rectangle => {
+                // self.w -= self.dw * lr;
+                adam_f!(self.dwm, self.dwv, self.dw, self.w);
+                self.dw = 0.;
+
+                // self.h -= self.dh * lr;
+                adam_f!(self.dhm, self.dhv, self.dh, self.h);
+                self.dh = 0.;
             },
             _ => ()
         }
@@ -272,6 +373,7 @@ pub fn smoothstep_d(left: f32, right: f32, x: f32) -> f32 {
     return res;
 }
 
+static mut PRINT_NOW: bool = false;
 
 fn small(scene: SceneType, save_path: &str) {
     println!("\n=== Scene {:?}", scene);
@@ -287,7 +389,7 @@ fn small(scene: SceneType, save_path: &str) {
     let imgx = 100;
     let imgy = imgx;
 
-    let th = 0.2;
+    let th = 0.1;
     let mut circ = Shape {
         stype: ShapeType::Circle,
         C: Point::new(0.3, 0.3),
@@ -304,6 +406,15 @@ fn small(scene: SceneType, save_path: &str) {
         ..Default::default()
     };
 
+    let mut rect = Shape {
+        stype: ShapeType::Rectangle,
+        w: 0.5,
+        h: 0.6,
+        th: th,
+        ..Default::default()
+    };
+
+
     // Create a new ImgBuf with width: imgx and height: imgy
     let mut imgbuf = image::ImageBuffer::new(imgx, imgy);
 
@@ -318,9 +429,9 @@ fn small(scene: SceneType, save_path: &str) {
 
         let p: Point = Point::new(xf, yf);
         let alpha1 = circ.distance_alpha(p);
-        let alpha2 = circ2.distance_alpha(p);
-        let w1 = 1. * alpha1;
-        let w2 = (1. - w1) * alpha2;
+        let alpha2 = rect.distance_alpha(p);
+        let w1 = 0. * alpha1;
+        let w2 = 1. * alpha2;
         
 
         let mut out_color = yellow * w1 + yellow * w2;
@@ -342,12 +453,19 @@ fn small(scene: SceneType, save_path: &str) {
 
     let refimg = loadsdf::loadimage("anim/reference.jpg");
 
-    // let mut circ_c: Point = Point::var_f(0.2, 0.);
-    // let mut circ_r = Dp::var_f(0.2);
-    let mut circ = Shape {
-        stype: ShapeType::Circle,
-        C: Point::new(-0.2, -0.2),
-        r: 0.1,
+    // let mut circ = Shape {
+    //     stype: ShapeType::Circle,
+    //     C: Point::new(-0.2, -0.2),
+    //     r: 0.1,
+    //     th: th,
+    //     color: yellow,
+    //     ..Default::default()
+    // };
+
+    let mut rect1 = Shape {
+        stype: ShapeType::Rectangle,
+        w: 0.1,
+        h: 0.5,
         th: th,
         color: yellow,
         ..Default::default()
@@ -364,14 +482,13 @@ fn small(scene: SceneType, save_path: &str) {
 
 
     let mut shapes: Vec<Shape> = Vec::new();
-    shapes.push(circ);
-    shapes.push(circ2);
+    shapes.push(rect1);
     let nshapes = shapes.len();
 
     // alpha = smoothstep(-sdf)
     let mut alpha: Vec<f32> = vec![0.; nshapes];
     // color = sum(weight_i * color_i)
-    let mut weight_step: Vec<f32> = vec![0.; nshapes];
+    let mut weight1: Vec<f32> = vec![0.; nshapes];
     // compute d pixel/d smoothstep using postfix sum
     let mut dstep_cum: Vec<ShapeColor> = vec![black; nshapes];
 
@@ -393,27 +510,22 @@ fn small(scene: SceneType, save_path: &str) {
             for i in 0..nshapes {
                 alpha[i] = shapes[i].distance_alpha(p);
                 if i == 0 {
-                    weight_step[i] = 1.;
+                    weight1[i] = 1.;
                 } else {
-                    weight_step[i] = 1. - weight_step[i - 1] * alpha[i - 1];
+                    weight1[i] = 1. - weight1[i - 1] * alpha[i - 1];
                 }
-                out_color = out_color + shapes[i].color * (weight_step[i] * alpha[i]);
+                out_color = out_color + shapes[i].color * (weight1[i] * alpha[i]);
             }
 
 
             // mse, derivative
             let pix: [u8; 4] = refimg.get_pixel(x, y).0;
-
-            let rgbref: [f32; 3] = [
-                pix[0] as f32 / 255.,
-                pix[1] as f32 / 255.,
-                pix[2] as f32 / 255.,
-            ];
+            let pixref = ShapeColor::new(pix[0] as i32, pix[1] as i32, pix[2] as i32);
 
             let pixmse = (
-                  (out_color.r - rgbref[0]).powf(2.)
-                + (out_color.g - rgbref[1]).powf(2.)
-                + (out_color.b - rgbref[2]).powf(2.)
+                  (out_color.r - pixref.r).powf(2.)
+                + (out_color.g - pixref.g).powf(2.)
+                + (out_color.b - pixref.b).powf(2.)
             );
 
             // compute postfix sums from end to begin for d pixel/d smoothstep
@@ -427,13 +539,26 @@ fn small(scene: SceneType, save_path: &str) {
             // pass derivative to each shape
             for i in 0..nshapes {
                 // 3 components in derivative: rgb
-                let dstep = dstep_cum[i] * weight_step[i];
+                let dpixdw = dstep_cum[i] * weight1[i];
                 let dldw = 2. * (
-                    (out_color.r - rgbref[0]) * dstep.r
-                  + (out_color.g - rgbref[1]) * dstep.g
-                  + (out_color.b - rgbref[2]) * dstep.b
+                    (out_color.r - pixref.r) * dpixdw.r
+                  + (out_color.g - pixref.g) * dpixdw.g
+                  + (out_color.b - pixref.b) * dpixdw.b
                 );
+                // if x == imgx / 2 && y == imgy / 2 {
+                //     println!("Pixel color={:?} dpix/dw={:?}", shapes[0].color, dpixdw);
+                // }
+                // if x == imgx / 2 && (y == imgy / 4 || y == imgy / 4 * 3 || y == imgy/2) {
+                //     unsafe {
+                //         PRINT_NOW = true;
+                //     }
+                //     println!("> x={} y={} dldw={}", x, y, dldw);
+                //     println!("dpixw.r={} out.r={} ref.r={} dldw={}", dpixdw.r, out_color.r, - pixref.r, dldw);
+                // }
                 shapes[i].backward(p, dldw);
+                unsafe {
+                    PRINT_NOW = false;
+                }
             }
             
             mse += pixmse;
@@ -445,8 +570,8 @@ fn small(scene: SceneType, save_path: &str) {
                 out_color.g as u8,
                 out_color.b as u8]);
         }
-        mse = mse / imgx as f32  / imgy as f32;
-        // println!("mse={:.3} r={:.3} dr={:.3} C={:?}", mse, circ.r, circ.dr, circ2.C);
+        mse = mse / imgx as f32 / imgy as f32;
+        println!("mse={:.9}", mse);
         let lr = 0.01;
         for i in 0..nshapes {
             shapes[i].step(lr);
@@ -455,7 +580,7 @@ fn small(scene: SceneType, save_path: &str) {
         // circ2.step(lr);
         
         
-        let filename: String = format!("anim/{}{:0>2}.jpg", save_path, _it);
+        let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
         imgbuf.save(filename).unwrap();
     }
 
