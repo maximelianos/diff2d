@@ -65,12 +65,13 @@ struct Shape {
 
     // rect
     w: f32,
-    h: f32,
-
+    dsdfw: f32,
     dw: f32,
     dwm: f32,
     dwv: f32,
 
+    h: f32,
+    dsdfh: f32,
     dh: f32,
     dhm: f32,
     dhv: f32,
@@ -176,20 +177,20 @@ impl Shape {
 
                 let y1 = p.y.abs() - h2;
                 let x1 = p.x.abs() - w2;
+                let mut dw: f32 = 0.;
+                let mut dh: f32 = 0.;
                 if y1 < 0. && x1 < 0. {
-                    if y1 > x1 { sdf = y1; } else { sdf = x1; } // closest border
+                    if y1 > x1 { sdf = y1; dw=0.; dh=-0.5; } else { sdf = x1; dw=-0.5; dh=0.; } // closest border
                 } else if -w2 < p.x && p.x < w2 {
                     sdf = y1;
+                    // here and forward we ditch derivative
                 } else if -h2 < p.y && p.y < h2 {
                     sdf = x1;
                 } else {
-                    let len = Point {
-                        x: x1,
-                        y: y1
-                    }.len();
-                    self.p_len = len;
-                    sdf = len;
+                    sdf = Point { x: x1, y: y1 }.len();
                 }
+                self.dsdfw = dw;
+                self.dsdfh = dh;
             },
             Triangle => {
                 let a = self.B - self.A;
@@ -208,32 +209,22 @@ impl Shape {
                 // case A
                 if ca >= 0. && 0. <= pja && pja <= a.len() {
                     sdf = ca / a.len();
-                    let len = a.len();
-                    self.dsdfA = Point::new(-pa.y, pa.x) / len + a * (ca / len.powf(3.));
-                    self.dsdfB = Point::new(pa.y, -pa.x) / len - a * (ca / len.powf(3.));
+                    // HERE we ditch derivative, because this branch is mul by 0 anyway
                 } else if cb >= 0. && 0. <= pjb && pjb <= b.len() {
                     sdf = cb / b.len();
-                    let len = b.len();
-                    self.dsdfB = Point::new(-pb.y, pb.x) / len + b * (cb / len.powf(3.));
-                    self.dsdfC = Point::new(pb.y, -pb.x) / len - b * (cb / len.powf(3.));
                 } else if cc >= 0. && 0. <= pjc && pjc <= c.len() {
                     sdf = cc / c.len();
-                    let len = c.len();
-                    self.dsdfC = Point::new(-pc.y, pc.x) / len + c * (cc / len.powf(3.));
-                    self.dsdfA = Point::new(pc.y, -pc.x) / len - c * (cc / len.powf(3.));
                 // case B
                 } else if cb > 0. && pjb < 0. || ca > 0. && !(pja < 0.)  {
                     // a-b side boundary
                     sdf = pb.len();
-                    self.dsdfB = (-pb) / sdf;
+                    // HERE we ditch derivative, because this branch is mul by 0 anyway
                 } else if cc > 0. && pjc < 0. || cb > 0. && !(pjb < 0.)  {
                     // b-c side boundary
                     sdf = pc.len();
-                    self.dsdfC = (-pc) / sdf;
                 } else if ca > 0. && pja < 0. || cc > 0. && !(pjc < 0.)  {
                     // c-a side boundary
                     sdf = pa.len();
-                    self.dsdfA = (-pa) / sdf;
                 } else {
                     // inside triangle. cross product is negative thus max is needed
 
@@ -293,50 +284,10 @@ impl Shape {
                 }
             },
             Rectangle => {
-                unsafe {
-                    if PRINT_NOW {
-                        println!("Hello from rectangle! dsdf={}", dldsdf);
-                    }
-                }
-                let w2 = self.w / 2.;
-                let h2 = self.h / 2.;
-
-                let y1 = p.y.abs() - h2;
-                let x1 = p.x.abs() - w2;
-                let dw: f32;
-                let dh: f32;
-                if y1 < 0. && x1 < 0. {
-                    if y1 > x1 {
-                        dw = 0.; dh = -0.5;
-                    } else { 
-                        dw = -0.5; dh = 0.;
-                    } // closest border
-                } else if -w2 < p.x && p.x < w2 {
-                    dw = 0.; dh = -0.5;
-                } else if -h2 < p.y && p.y < h2 {
-                    dw = -0.5; dh = 0.;
-                } else {
-                    // avoid division by 0!
-                    if self.p_len > 0.00001 {
-                        dw = x1 * (-0.5) / self.p_len;
-                        dh = y1 * (-0.5) / self.p_len;
-                    } else {
-                        dw = 0.;
-                        dh = 0.;
-                    }
-                }
-                unsafe {
-                    if PRINT_NOW {
-                        println!("dw={} dh={}", dw, dh);
-                    }
-                }
-                self.dw += dw * dldsdf;
-                self.dh += dh * dldsdf;
-                unsafe {
-                    if PRINT_NOW {
-                        println!("self.dw={} dh={}", self.dw, self.dh);
-                    }
-                }
+                self.dw += self.dsdfw * dldsdf;
+                self.dh += self.dsdfh * dldsdf;
+                self.dsdfw = 0.;
+                self.dsdfh = 0.;
             },
             Triangle => {
                 self.dA = self.dA + self.dsdfA * dldsdf;
@@ -570,7 +521,7 @@ fn small(scene: SceneType, save_path: &str) {
 
         let p: Point = Point::new(xf, yf);
         let alpha1 = circ.distance_alpha(p);
-        let alpha2 = tri.distance_alpha(p);
+        let alpha2 = rect.distance_alpha(p);
         let w1 = 0. * alpha1;
         let w2 = 1. * alpha2;
         
@@ -633,7 +584,7 @@ fn small(scene: SceneType, save_path: &str) {
 
 
     let mut shapes: Vec<Shape> = Vec::new();
-    shapes.push(tri);
+    shapes.push(rect1);
     let nshapes = shapes.len();
 
     // alpha = smoothstep(-sdf)
