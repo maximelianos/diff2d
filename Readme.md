@@ -51,6 +51,17 @@ https://blog.logrocket.com/macros-in-rust-a-tutorial-with-examples/
 SDF
 https://habr.com/ru/post/438316/
 
+Cargo dependency resolution
+http://aturon.github.io/tech/2018/07/25/cargo-version-selection/
+
+Impl for alias type
+https://stackoverflow.com/questions/35568871/is-it-possible-to-implement-methods-on-type-aliases
+
+https://stackoverflow.com/questions/45086595/is-it-considered-a-bad-practice-to-implement-deref-for-newtypes
+
+nalgebra dot product
+https://zsiciarz.github.io/24daysofrust/book/vol1/day14.html
+
 ## Changelog
 
 v1

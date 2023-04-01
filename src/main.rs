@@ -3,36 +3,13 @@
 mod loadsdf;
 mod libdif;
 mod point;
-mod hashmap;
 use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap}, time::Instant, rc::Rc, cell::RefCell, borrow::Borrow, fs::File};
+use nalgebra as na;
 
 use grid::Grid;
 use image::{GrayImage, GenericImageView};
-//use libdif::{DGraph, Graph, Dp, GRAPH};
-
+use libdif::{DGraph, Graph, Dp, GRAPH};
 use point::Point;
-
-// struct ShapeTransform {
-//     scale: f32,
-//     rotate: f32, // in radians
-//     translate: Point
-// }
-
-// impl Default for ShapeTransform {
-//     fn default() -> Self { Self{scale: 1., rotate: 0., translate: Point::new(0., 0.)} }
-// }
-
-// impl ShapeTransform {
-//     fn apply(&self, p: Point) -> Point {
-//         // apply same transform to translation vector
-//         let translate = self.translate; //(self.translate * (1./self.scale)).rotate(-self.rotate);
-//         // transform in reverse order
-//         let mut q = p - translate;
-//         q = q.rotate(-self.rotate);
-//         q = q * (1./self.scale);
-//         return q;
-//     }
-// }
 
 #[derive(Default, Copy, Clone, Debug, PartialEq)]
 enum ShapeType {
@@ -95,48 +72,17 @@ struct Shape {
     // dCm: Point,
     // dCv: Point,
 
-    color: ShapeColor
+    color: vec3,
+    dcol: vec3,
+    dcolm: vec3,
+    dcolv: vec3,
 }
 
-#[derive(Default, Copy, Clone, Debug, PartialEq)]
-struct ShapeColor {
-    r: f32,
-    g: f32,
-    b: f32
+type vec3 = na::Vector3::<f32>;
+
+fn vec3_sqrt(v: vec3) -> vec3 {
+    vec3::new(v.x.sqrt(), v.y.sqrt(), v.z.sqrt())
 }
-
-impl ShapeColor {
-    fn new(r: i32, g: i32, b: i32) -> ShapeColor {
-        ShapeColor { r: r as f32 / 255., g: g as f32 / 255., b: b as f32 / 255. }
-    }
-}
-
-impl ops::Add<ShapeColor> for ShapeColor {
-    type Output = ShapeColor;
-
-    fn add(self, _rhs: ShapeColor) -> ShapeColor {
-        //println!("> Point.add(Point) was called");
-        return ShapeColor {
-            r: self.r + _rhs.r,
-            g: self.g + _rhs.g,
-            b: self.b + _rhs.b
-        };
-    }
-}
-
-impl ops::Mul<f32> for ShapeColor {
-    type Output = ShapeColor;
-
-    fn mul(self, rhs: f32) -> Self::Output {
-        return ShapeColor {
-            r: self.r * rhs,
-            g: self.g * rhs,
-            b: self.b * rhs,
-        };
-    }
-}
-
-
 
 impl Shape {
     fn build(&self) -> Self {
@@ -265,7 +211,7 @@ impl Shape {
         return smoothstep(0., self.th, -sdf);
     }
 
-    fn backward(&mut self, point: Point, dldw: f32) {
+    fn backward(&mut self, point: Point, dldw: f32, drgb: vec3) {
         let dldsdf = dldw * smoothstep_d(0., self.th, -self.sdf) * (-1.);
         let p = point;
         unsafe {
@@ -273,7 +219,8 @@ impl Shape {
                 println!("SDF={}", self.sdf);
             }
         }
-        
+
+        self.dcol += drgb;
 
         use ShapeType::*;
         match self.stype {
@@ -308,12 +255,13 @@ impl Shape {
         let beta2 = 0.999;
         let k = 1.;
         let eps = 1e-8;
+        let vec3_eps = vec3::new(eps, eps, eps);
 
         macro_rules! adam{
             // match like arm for macro
                ($m:expr,$v:expr,$g:expr,$x:expr)=>{
-                // input: previous momentum, v, x, current grad 
-                // output: new momentum, v, x
+                // input: prev momentum, prev v, cur grad, prev x, lr
+                // output: new momentum, new v, new wx
                 // macro expand to this code
                 {
                     // $a and $b will be templated using the value/variable provided to macro
@@ -327,7 +275,27 @@ impl Shape {
             }
         }
 
-        
+        macro_rules! adam_vec{
+            // match like arm for macro
+               ($m:expr,$v:expr,$g:expr,$x:expr)=>{
+                // input: prev momentum, prev v, cur grad, prev x, lr
+                // output: new momentum, new v, new wx
+                // macro expand to this code
+                {
+                    // $a and $b will be templated using the value/variable provided to macro
+                    $m = $m * beta1 + $g * (1. - beta1);
+                    $v = $v * beta2 + $g.component_mul(&$g) * (1. - beta2);
+                    let m_unbias = $m * (1. / (1. - beta1.powf(k)));
+                    let v_unbias = $v * (1. / (1. - beta2.powf(k)));
+                    let grad = m_unbias.component_div(&(vec3_sqrt(v_unbias) + vec3_eps));
+                    $x = $x - grad * lr;
+                }
+            }
+        }
+
+        adam_vec!(self.dcolm, self.dcolv, self.dcol, self.color);
+        // self.color = self.color - self.dcol * lr;
+        self.dcol = vec3::new(0., 0., 0.);
 
         use ShapeType::*;
         match self.stype {
@@ -368,13 +336,13 @@ impl Shape {
                 self.dC = Point::new(0., 0.);
             },
             Rectangle => {
-                // self.w -= self.dw * lr;
-                adam!(self.dwm, self.dwv, self.dw, self.w);
-                self.dw = 0.;
+                self.w -= self.dw * lr;
+                // adam!(self.dwm, self.dwv, self.dw, self.w);
+                // self.dw = 0.;
 
-                // self.h -= self.dh * lr;
-                adam!(self.dhm, self.dhv, self.dh, self.h);
-                self.dh = 0.;
+                self.h -= self.dh * lr;
+                // adam!(self.dhm, self.dhv, self.dh, self.h);
+                // self.dh = 0.;
             },
             Triangle => {
                 adam!(self.dAm, self.dAv, self.dA, self.A);
@@ -396,14 +364,14 @@ impl Shape {
 // struct TriangleMesh {
 //     verticies: Vec<Point>,
 //     indices: Vec<u32>, // triangles
-//     colors: Vec<ShapeColor>, // for each face
+//     colors: Vec<vec3>, // for each face
 //     tc: Vec<Point>,
 //     texture: GrayImage,
 // }
 
 // impl TriangleMesh {
-//     fn render(&self, point: Point, color: &mut ShapeColor) -> bool {
-//         *color = ShapeColor { r: 1., g: 1., b: 1., layer: 0 };
+//     fn render(&self, point: Point, color: &mut vec3) -> bool {
+//         *color = vec3 { r: 1., g: 1., b: 1., layer: 0 };
 //         return false;
 //     }
 // }
@@ -461,9 +429,9 @@ fn small(scene: SceneType, save_path: &str) {
     println!("\n=== Scene {:?}", scene);
     let mut start_time = Instant::now();
 
-    let yellow = ShapeColor::new(255, 220, 3);
-    let red = ShapeColor::new(255, 0, 0);
-    let black = ShapeColor{r: 0., g: 0., b: 0.};
+    let yellow = vec3::new(255./255., 220./255., 3./255.);
+    let red = vec3::new(255./255., 0., 0.);
+    let black = vec3::new(0., 0., 0.);
     
     println!("Initialization took {:?}", start_time.elapsed());
     start_time = Instant::now();
@@ -521,7 +489,7 @@ fn small(scene: SceneType, save_path: &str) {
 
         let p: Point = Point::new(xf, yf);
         let alpha1 = circ.distance_alpha(p);
-        let alpha2 = rect.distance_alpha(p);
+        let alpha2 = tri.distance_alpha(p);
         let w1 = 0. * alpha1;
         let w2 = 1. * alpha2;
         
@@ -529,9 +497,9 @@ fn small(scene: SceneType, save_path: &str) {
         let mut out_color = yellow * w1 + yellow * w2;
         out_color = out_color * 255.;
         *pixel = image::Rgb([
-            out_color.r as u8,
-            out_color.g as u8,
-            out_color.b as u8]);
+            out_color.x as u8,
+            out_color.y as u8,
+            out_color.z as u8]);
     }
 
     println!("Rendering took {:?}", start_time.elapsed());
@@ -574,27 +542,27 @@ fn small(scene: SceneType, save_path: &str) {
 
     let mut tri = Shape {
         stype: ShapeType::Triangle,
-        A: Point::new(0.4, 0.2),
-        B: Point::new(-0.2, 0.2),
-        C: Point::new(-0.2, -0.2),
+        A: Point::new(0.4, 0.5),
+        B: Point::new(-0.4, 0.2),
+        C: Point::new(-0.3, -0.5),
         th: th,
-        color: yellow,
+        color: red,
         ..Default::default()
     }.build();
 
 
     let mut shapes: Vec<Shape> = Vec::new();
-    shapes.push(rect1);
+    shapes.push(tri);
     let nshapes = shapes.len();
 
     // alpha = smoothstep(-sdf)
-    let mut alpha: Vec<f32> = vec![0.; nshapes];
+    let mut smstep: Vec<f32> = vec![0.; nshapes];
     // color = sum(weight_i * color_i)
     let mut weight1: Vec<f32> = vec![0.; nshapes];
     // compute d pixel/d smoothstep using postfix sum
-    let mut dstep_cum: Vec<ShapeColor> = vec![black; nshapes];
+    let mut dstep_cum: Vec<vec3> = vec![black; nshapes];
 
-    for _it in 0..30 {
+    for _it in 0..120 {
         // let mut msed = Dp::const_f(0.);
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
@@ -610,43 +578,40 @@ fn small(scene: SceneType, save_path: &str) {
             // let sdf = circ.distance(p);
             // let w = smoothstep(0., th, -sdf);
             for i in 0..nshapes {
-                alpha[i] = shapes[i].distance_alpha(p);
+                smstep[i] = shapes[i].distance_alpha(p);
                 if i == 0 {
                     weight1[i] = 1.;
                 } else {
-                    weight1[i] = 1. - weight1[i - 1] * alpha[i - 1];
+                    weight1[i] = 1. - weight1[i - 1] * smstep[i - 1];
                 }
-                out_color = out_color + shapes[i].color * (weight1[i] * alpha[i]);
+                out_color = out_color + shapes[i].color * (weight1[i] * smstep[i]);
             }
 
 
             // mse, derivative
             let pix: [u8; 4] = refimg.get_pixel(x, y).0;
-            let pixref = ShapeColor::new(pix[0] as i32, pix[1] as i32, pix[2] as i32);
+            let pixref = vec3::new(pix[0] as f32 / 255., pix[1] as f32 / 255., pix[2] as f32 / 255.);
+            let pixdif = out_color - pixref;
 
-            let pixmse = (
-                  (out_color.r - pixref.r).powf(2.)
-                + (out_color.g - pixref.g).powf(2.)
-                + (out_color.b - pixref.b).powf(2.)
-            );
+            let pixmse = pixdif.dot(&pixdif); // sum of squares
 
             // compute postfix sums from end to begin for d pixel/d smoothstep
             dstep_cum[nshapes-1] = shapes[nshapes-1].color;
             for i in 1..nshapes {
                 let j = nshapes - i - 1;
                 // had to derive this formula
-                dstep_cum[j] = shapes[j].color + dstep_cum[j+1] * (-alpha[j+1]);
+                dstep_cum[j] = shapes[j].color + dstep_cum[j+1] * (-smstep[j+1]);
             }
 
             // pass derivative to each shape
             for i in 0..nshapes {
                 // 3 components in derivative: rgb
-                let dpixdw = dstep_cum[i] * weight1[i];
-                let dldw = 2. * (
-                    (out_color.r - pixref.r) * dpixdw.r
-                  + (out_color.g - pixref.g) * dpixdw.g
-                  + (out_color.b - pixref.b) * dpixdw.b
-                );
+                let dpixdw: vec3 = dstep_cum[i] * weight1[i];
+                let dldw = pixdif.dot(&dpixdw) * 2.; // coors are factored out of rgb channels, sum is ok
+                
+                let dpixdrgb = weight1[i] * smstep[i];
+                let drgb = pixdif * dpixdrgb;
+
                 // if x == imgx / 2 && y == imgy / 2 {
                 //     println!("Pixel color={:?} dpix/dw={:?}", shapes[0].color, dpixdw);
                 // }
@@ -657,7 +622,7 @@ fn small(scene: SceneType, save_path: &str) {
                 //     println!("> x={} y={} dldw={}", x, y, dldw);
                 //     println!("dpixw.r={} out.r={} ref.r={} dldw={}", dpixdw.r, out_color.r, - pixref.r, dldw);
                 // }
-                shapes[i].backward(p, dldw);
+                shapes[i].backward(p, dldw, drgb);
                 unsafe {
                     PRINT_NOW = false;
                 }
@@ -668,18 +633,19 @@ fn small(scene: SceneType, save_path: &str) {
             
             out_color = out_color * 255.;
             *pixel = image::Rgb([
-                out_color.r as u8,
-                out_color.g as u8,
-                out_color.b as u8]);
+                out_color.x as u8,
+                out_color.y as u8,
+                out_color.z as u8]);
         }
         mse = mse / imgx as f32 / imgy as f32;
         println!("mse={:.9}", mse);
-        let lr = 0.02;
+        let mut lr = 0.01;
+        if _it > 50 {
+            lr *= 10.;
+        }
         for i in 0..nshapes {
             shapes[i].step(lr);
         }
-        // circ.step(lr);
-        // circ2.step(lr);
         
         
         let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
@@ -687,9 +653,6 @@ fn small(scene: SceneType, save_path: &str) {
     }
 
 }
-
-
-
 
 
 
@@ -703,6 +666,7 @@ fn main() {
     //     options.image_width = Some(2500);
     //     report.flamegraph_with_options(file, &mut options).unwrap();
     // };
+
     
     return;
 }
