@@ -42,6 +42,12 @@ https://www.sitepoint.com/rust-global-variables/
 No class constructors
 https://doc.rust-lang.org/nomicon/constructors.html
 
+Inheritance struct common variables
+https://users.rust-lang.org/t/struct-inheritance-embedding-best-practice/10627
+
+Easy macros
+https://blog.logrocket.com/macros-in-rust-a-tutorial-with-examples/
+
 SDF
 https://habr.com/ru/post/438316/
 

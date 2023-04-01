@@ -74,8 +74,25 @@ struct Shape {
     dh: f32,
     dhm: f32,
     dhv: f32,
-    
-    
+
+    // tri
+    A: Point,
+    dsdfA: Point,
+    dA: Point,
+    dAm: Point,
+    dAv: Point,
+
+    B: Point,
+    dsdfB: Point,
+    dB: Point,
+    dBm: Point,
+    dBv: Point,
+
+    // C: Point,
+    dsdfC: Point,
+    // dC: Point,
+    // dCm: Point,
+    // dCv: Point,
 
     color: ShapeColor
 }
@@ -121,6 +138,27 @@ impl ops::Mul<f32> for ShapeColor {
 
 
 impl Shape {
+    fn build(&self) -> Self {
+        let mut res = Shape { ..*self };
+        use ShapeType::*;
+        match res.stype {
+            Triangle => {
+                // order points in clockwise manner
+                let a = res.B - res.A;
+                let b = res.C - res.A;
+                //println!("> Cross product: {}", a.cross(b));
+                if a.cross(b) > 0. {
+                    let t = res.B;
+                    res.B = res.C;
+                    res.C = t;
+                }
+
+            },
+            _ => ()
+        }
+        return res;
+    }
+
     fn distance_pre(&mut self, point: Point) -> f32 {
         use ShapeType::*;
         // transform is inverse: global space -> local space -> object space
@@ -151,6 +189,78 @@ impl Shape {
                     }.len();
                     self.p_len = len;
                     sdf = len;
+                }
+            },
+            Triangle => {
+                let a = self.B - self.A;
+                let b = self.C - self.B;
+                let c = self.A - self.C;
+                let pa = p - self.A;
+                let pb = p - self.B;
+                let pc = p - self.C;
+                // on which side of triangle is our point
+                let ca = a.cross(pa);
+                let cb = b.cross(pb);
+                let cc = c.cross(pc);
+                let pja = a.proj(pa);
+                let pjb = b.proj(pb);
+                let pjc = c.proj(pc);
+                // case A
+                if ca >= 0. && 0. <= pja && pja <= a.len() {
+                    sdf = ca / a.len();
+                    let len = a.len();
+                    self.dsdfA = Point::new(-pa.y, pa.x) / len + a * (ca / len.powf(3.));
+                    self.dsdfB = Point::new(pa.y, -pa.x) / len - a * (ca / len.powf(3.));
+                } else if cb >= 0. && 0. <= pjb && pjb <= b.len() {
+                    sdf = cb / b.len();
+                    let len = b.len();
+                    self.dsdfB = Point::new(-pb.y, pb.x) / len + b * (cb / len.powf(3.));
+                    self.dsdfC = Point::new(pb.y, -pb.x) / len - b * (cb / len.powf(3.));
+                } else if cc >= 0. && 0. <= pjc && pjc <= c.len() {
+                    sdf = cc / c.len();
+                    let len = c.len();
+                    self.dsdfC = Point::new(-pc.y, pc.x) / len + c * (cc / len.powf(3.));
+                    self.dsdfA = Point::new(pc.y, -pc.x) / len - c * (cc / len.powf(3.));
+                // case B
+                } else if cb > 0. && pjb < 0. || ca > 0. && !(pja < 0.)  {
+                    // a-b side boundary
+                    sdf = pb.len();
+                    self.dsdfB = (-pb) / sdf;
+                } else if cc > 0. && pjc < 0. || cb > 0. && !(pjb < 0.)  {
+                    // b-c side boundary
+                    sdf = pc.len();
+                    self.dsdfC = (-pc) / sdf;
+                } else if ca > 0. && pja < 0. || cc > 0. && !(pjc < 0.)  {
+                    // c-a side boundary
+                    sdf = pa.len();
+                    self.dsdfA = (-pa) / sdf;
+                } else {
+                    // inside triangle. cross product is negative thus max is needed
+
+                    sdf = f32::max(ca / a.len(), 
+                        f32::max(cb / b.len(), cc / c.len()));
+                    let sa = ca / a.len();
+                    let sb = cb / b.len();
+                    let sc = cc / c.len();
+                    if sa > sb && sa > sc {
+                        let len = a.len();
+                        if len > 0.0001 {
+                            self.dsdfA = Point::new(-pa.y+a.y, pa.x-a.x) / len + a * (ca / len.powf(3.));
+                            self.dsdfB = Point::new(pa.y, -pa.x) / len - a * (ca / len.powf(3.));
+                        }
+                    } else if sb > sc {
+                        let len = b.len();
+                        if len > 0.0001 {
+                            self.dsdfB = Point::new(-pb.y+b.y, pb.x-b.x) / len + b * (cb / len.powf(3.));
+                            self.dsdfC = Point::new(pb.y, -pb.x) / len - b * (cb / len.powf(3.));
+                        }
+                    } else {
+                        let len = c.len();
+                        if len > 0.0001 {
+                            self.dsdfC = Point::new(-pc.y+c.y, pc.x-c.x) / len + c * (cc / len.powf(3.));
+                            self.dsdfA = Point::new(pc.y, -pc.x) / len - c * (cc / len.powf(3.));
+                        }
+                    }
                 }
             },
             _ => panic!("Unimplemented shape")
@@ -228,7 +338,15 @@ impl Shape {
                     }
                 }
             },
-            _ => ()
+            Triangle => {
+                self.dA = self.dA + self.dsdfA * dldsdf;
+                self.dB = self.dB + self.dsdfB * dldsdf;
+                self.dC = self.dC + self.dsdfC * dldsdf;
+                self.dsdfA = Point::new(0., 0.);
+                self.dsdfB = Point::new(0., 0.);
+                self.dsdfC = Point::new(0., 0.);
+            },
+            _ => panic!("Unimplemented backward")
         }
         
     }
@@ -240,23 +358,25 @@ impl Shape {
         let k = 1.;
         let eps = 1e-8;
 
-        macro_rules! adam_f{
+        macro_rules! adam{
             // match like arm for macro
                ($m:expr,$v:expr,$g:expr,$x:expr)=>{
                 // input: previous momentum, v, x, current grad 
                 // output: new momentum, v, x
-            // macro expand to this code
-                   {
-            // $a and $b will be templated using the value/variable provided to macro
-                        $m = $m * beta1 + $g * (1. - beta1);
-                        $v = $v * beta2 + $g * $g * (1. - beta2);
-                        let m_unbias = $m / (1. - beta1.powf(k));
-                        let v_unbias = $v / (1. - beta2.powf(k));
-                        let grad = m_unbias / ( v_unbias.powf(0.5) + eps );
-                        $x = $x - grad * lr;
-                   }
-               }
-           }
+                // macro expand to this code
+                {
+                    // $a and $b will be templated using the value/variable provided to macro
+                    $m = $m * beta1 + $g * (1. - beta1);
+                    $v = $v * beta2 + $g * $g * (1. - beta2);
+                    let m_unbias = $m / (1. - beta1.powf(k));
+                    let v_unbias = $v / (1. - beta2.powf(k));
+                    let grad = m_unbias / (v_unbias.powf(0.5) + eps);
+                    $x = $x - grad * lr;
+                }
+            }
+        }
+
+        
 
         use ShapeType::*;
         match self.stype {
@@ -298,12 +418,23 @@ impl Shape {
             },
             Rectangle => {
                 // self.w -= self.dw * lr;
-                adam_f!(self.dwm, self.dwv, self.dw, self.w);
+                adam!(self.dwm, self.dwv, self.dw, self.w);
                 self.dw = 0.;
 
                 // self.h -= self.dh * lr;
-                adam_f!(self.dhm, self.dhv, self.dh, self.h);
+                adam!(self.dhm, self.dhv, self.dh, self.h);
                 self.dh = 0.;
+            },
+            Triangle => {
+                adam!(self.dAm, self.dAv, self.dA, self.A);
+                adam!(self.dBm, self.dBv, self.dB, self.B);
+                adam!(self.dCm, self.dCv, self.dC, self.C);
+                // self.A = self.A - self.dA * lr;
+                // self.B = self.B - self.dB * lr;
+                // self.C = self.C - self.dC * lr;
+                self.dA = Point::new(0., 0.);
+                self.dB = Point::new(0., 0.);
+                self.dC = Point::new(0., 0.);
             },
             _ => ()
         }
@@ -414,6 +545,16 @@ fn small(scene: SceneType, save_path: &str) {
         ..Default::default()
     };
 
+    let mut tri = Shape {
+        stype: ShapeType::Triangle,
+        A: Point::new(0.2, 0.2),
+        B: Point::new(-0.2, 0.2),
+        C: Point::new(-0.2, -0.2),
+        th: th,
+        ..Default::default()
+    }.build();
+
+
 
     // Create a new ImgBuf with width: imgx and height: imgy
     let mut imgbuf = image::ImageBuffer::new(imgx, imgy);
@@ -429,7 +570,7 @@ fn small(scene: SceneType, save_path: &str) {
 
         let p: Point = Point::new(xf, yf);
         let alpha1 = circ.distance_alpha(p);
-        let alpha2 = rect.distance_alpha(p);
+        let alpha2 = tri.distance_alpha(p);
         let w1 = 0. * alpha1;
         let w2 = 1. * alpha2;
         
@@ -480,9 +621,19 @@ fn small(scene: SceneType, save_path: &str) {
         ..Default::default()
     };
 
+    let mut tri = Shape {
+        stype: ShapeType::Triangle,
+        A: Point::new(0.4, 0.2),
+        B: Point::new(-0.2, 0.2),
+        C: Point::new(-0.2, -0.2),
+        th: th,
+        color: yellow,
+        ..Default::default()
+    }.build();
+
 
     let mut shapes: Vec<Shape> = Vec::new();
-    shapes.push(rect1);
+    shapes.push(tri);
     let nshapes = shapes.len();
 
     // alpha = smoothstep(-sdf)
@@ -492,7 +643,7 @@ fn small(scene: SceneType, save_path: &str) {
     // compute d pixel/d smoothstep using postfix sum
     let mut dstep_cum: Vec<ShapeColor> = vec![black; nshapes];
 
-    for _it in 0..20 {
+    for _it in 0..30 {
         // let mut msed = Dp::const_f(0.);
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
@@ -572,7 +723,7 @@ fn small(scene: SceneType, save_path: &str) {
         }
         mse = mse / imgx as f32 / imgy as f32;
         println!("mse={:.9}", mse);
-        let lr = 0.01;
+        let lr = 0.02;
         for i in 0..nshapes {
             shapes[i].step(lr);
         }

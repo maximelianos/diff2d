@@ -72,6 +72,22 @@ impl ops::Mul<f32> for Point {
     }
 }
 
+impl ops::Div<Point> for Point {
+    type Output = Point;
+
+    fn div(self, _rhs: Point) -> Point {
+        return Point {x: self.x / _rhs.x, y: self.y / _rhs.y};
+    }
+}
+
+impl ops::Div<f32> for Point {
+    type Output = Point;
+
+    fn div(self, _rhs: f32) -> Point {
+        return Point {x: self.x / _rhs, y: self.y / _rhs};
+    }
+}
+
 impl ops::Neg for Point {
     type Output = Self;
 
