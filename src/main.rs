@@ -121,12 +121,24 @@ impl Shape {
                 let w2 = self.w / 2.;
                 let h2 = self.h / 2.;
 
+                let p = point - self.C;
                 let y1 = p.y.abs() - h2;
                 let x1 = p.x.abs() - w2;
                 let mut dw: f32 = 0.;
                 let mut dh: f32 = 0.;
                 if y1 < 0. && x1 < 0. {
-                    if y1 > x1 { sdf = y1; dw=0.; dh=-0.5; } else { sdf = x1; dw=-0.5; dh=0.; } // closest border
+                    // closest border
+                    if y1 > x1 { 
+                        sdf = y1;
+                        dw=0.; dh=-0.5;
+                        let dy: f32 = if p.y > 0. {-1.} else {1.};
+                        self.dsdfC = Point::new(0., dy);
+                    } else { 
+                        sdf = x1;
+                        dw=-0.5; dh=0.;
+                        let dx: f32 = if p.x > 0. {-1.} else {1.};
+                        self.dsdfC = Point::new(dx, 0.);
+                    } 
                 } else if -w2 < p.x && p.x < w2 {
                     sdf = y1;
                     // here and forward we ditch derivative
@@ -233,8 +245,10 @@ impl Shape {
             Rectangle => {
                 self.dw += self.dsdfw * dldsdf;
                 self.dh += self.dsdfh * dldsdf;
+                self.dC = self.dC + self.dsdfC * dldsdf;
                 self.dsdfw = 0.;
                 self.dsdfh = 0.;
+                self.dsdfC = Point::new(0., 0.);
             },
             Triangle => {
                 self.dA = self.dA + self.dsdfA * dldsdf;
@@ -336,13 +350,16 @@ impl Shape {
                 self.dC = Point::new(0., 0.);
             },
             Rectangle => {
-                self.w -= self.dw * lr;
-                // adam!(self.dwm, self.dwv, self.dw, self.w);
-                // self.dw = 0.;
+                // self.w -= self.dw * lr;
+                adam!(self.dwm, self.dwv, self.dw, self.w);
+                self.dw = 0.;
 
-                self.h -= self.dh * lr;
-                // adam!(self.dhm, self.dhv, self.dh, self.h);
-                // self.dh = 0.;
+                // self.h -= self.dh * lr;
+                adam!(self.dhm, self.dhv, self.dh, self.h);
+                self.dh = 0.;
+
+                adam!(self.dCm, self.dCv, self.dC, self.C);
+                self.dC = Point::new(0., 0.);
             },
             Triangle => {
                 adam!(self.dAm, self.dAv, self.dA, self.A);
@@ -458,6 +475,7 @@ fn small(scene: SceneType, save_path: &str) {
 
     let mut rect = Shape {
         stype: ShapeType::Rectangle,
+        C: Point::new(0., 0.),
         w: 0.5,
         h: 0.6,
         th: th,
@@ -524,10 +542,11 @@ fn small(scene: SceneType, save_path: &str) {
 
     let mut rect1 = Shape {
         stype: ShapeType::Rectangle,
+        C: Point::new(0.3, 0.15),
         w: 0.1,
-        h: 0.5,
+        h: 0.2,
         th: th,
-        color: yellow,
+        color: black,
         ..Default::default()
     };
 
@@ -562,7 +581,7 @@ fn small(scene: SceneType, save_path: &str) {
     // compute d pixel/d smoothstep using postfix sum
     let mut dstep_cum: Vec<vec3> = vec![black; nshapes];
 
-    for _it in 0..120 {
+    for _it in 0..80 {
         // let mut msed = Dp::const_f(0.);
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
@@ -640,8 +659,8 @@ fn small(scene: SceneType, save_path: &str) {
         mse = mse / imgx as f32 / imgy as f32;
         println!("mse={:.9}", mse);
         let mut lr = 0.01;
-        if _it > 50 {
-            lr *= 10.;
+        if _it > 40 {
+            lr *= 15.;
         }
         for i in 0..nshapes {
             shapes[i].step(lr);
