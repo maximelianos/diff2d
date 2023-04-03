@@ -7,7 +7,6 @@ use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap},
 use nalgebra as na;
 use ndarray::{Array3, Array};
 
-use grid::Grid;
 use image::{GrayImage, GenericImageView, RgbImage};
 use libdif::{DGraph, Graph, Dp, GRAPH};
 use point::Point;
@@ -81,7 +80,6 @@ struct Shape {
     // image sdf
     // C - corner
     // w, h - size
-    input_bitmap: GrayImage,
     test_bitmap: bool,
     bitmap: Array3<f32>,
     dbitmap: Array3<f32>,
@@ -96,18 +94,8 @@ fn vec3_sqrt(v: vec3) -> vec3 {
     vec3::new(v.x.sqrt(), v.y.sqrt(), v.z.sqrt())
 }
 
-fn ndarray_sqrt(arr: &mut Array3<f32>) -> &Array3<f32> {
-    let dim: (usize, usize, usize) = arr.dim();
-    for i in 0..dim.0 {
-        for j in 0..dim.1 {
-            arr[[i, j, 0]] = arr[[i, j, 0]].sqrt();
-        }
-    }
-    arr
-}
-
 impl Shape {
-    fn build(mut self) -> Self {
+    fn build_tri(mut self) -> Self {
         use ShapeType::*;
         match self.stype {
             Triangle => {
@@ -122,21 +110,18 @@ impl Shape {
                 }
 
             },
-            Bitmap => {
-                let (bitmap_w, bitmap_h): (u32, u32) = self.input_bitmap.dimensions();
-                self.bitmap = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
-                for (x, y, pixel) in self.input_bitmap.enumerate_pixels_mut() {
-                    self.bitmap[[y as usize, x as usize, 0]] = pixel.0[0] as f32 / 255.;
-                    if self.test_bitmap {
-                        self.bitmap[[y as usize, x as usize, 0]] = 0.59;
-                    }
-                }
-                self.dbitmap = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
-                self.dbitmapm = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
-                self.dbitmapv = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
-            }
             _ => ()
         }
+        return self;
+    }
+
+    fn build_bitmap(mut self, bitmap_h: usize, bitmap_w: usize) -> Self {
+        // without this initialization derivative will be 0
+        self.bitmap = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1)) + 0.5 + self.th / 2.;
+
+        self.dbitmap = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
+        self.dbitmapm = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
+        self.dbitmapv = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
         return self;
     }
 
@@ -247,7 +232,7 @@ impl Shape {
                 }
             },
             Bitmap => {
-                let (bitmap_w, bitmap_h): (u32, u32) = self.input_bitmap.dimensions();
+                let (bitmap_h, bitmap_w, _c) = self.bitmap.dim();
                 let q = (p - self.C) * Point::new(bitmap_w as f32 / self.w, bitmap_h as f32 / self.h);
 
                 let scale: f32 = if self.field_scale != 0. { self.field_scale } else { 1. };
@@ -277,7 +262,7 @@ impl Shape {
                 let v3 = get_sdf(x+1, y+1, k3);
                 let v4 = get_sdf(x+1, y, k4);
                 
-                sdf = (k1*v1 + k2*v2 + k3*v3 + k4*v4)/4.*scale; // TODO: this is not true distance, please think about it
+                sdf = (k1*v1 + k2*v2 + k3*v3 + k4*v4)*scale; // TODO: this is not true distance, please think about it
             }
             _ => panic!("Unimplemented shape")
         }
@@ -321,7 +306,7 @@ impl Shape {
                 self.dsdfC = Point::new(0., 0.);
             },
             Bitmap => {
-                let (bitmap_w, bitmap_h): (u32, u32) = self.input_bitmap.dimensions();
+                let (bitmap_h, bitmap_w, _c) = self.bitmap.dim();
                 let q = (p - self.C) * Point::new(bitmap_w as f32 / self.w, bitmap_h as f32 / self.h);
 
                 let scale: f32 = if self.field_scale != 0. { self.field_scale } else { 1. };
@@ -340,7 +325,7 @@ impl Shape {
 
                 let mut get_sdf = |px: i32, py: i32, k: f32| -> f32 {
                     if 0 <= px && px < bitmap_w as i32 && 0 <= py && py < bitmap_h as i32 {
-                        self.dbitmap[[py as usize, px as usize, 0]] += k / 4. * dldsdf;
+                        self.dbitmap[[py as usize, px as usize, 0]] += k * dldsdf;
                         0.
                     } else {
                         dist_large
@@ -351,8 +336,6 @@ impl Shape {
                 let v2 = get_sdf(x, y+1, k2);
                 let v3 = get_sdf(x+1, y+1, k3);
                 let v4 = get_sdf(x+1, y, k4);
-                
-                // sdf = (k1*v1 + k2*v2 + k3*v3 + k4*v4)/4.*scale; // TODO: this is not true distance, please think about it
             },
             _ => panic!("Unimplemented backward")
         }
@@ -415,7 +398,7 @@ impl Shape {
                     $v = &$v * beta2 + &$g * &$g * (1. - beta2);
                     let m_unbias = &$m * (1. / (1. - beta1.powf(k)));
                     let mut v_unbias = &$v * (1. / (1. - beta2.powf(k)));
-                    let grad = &m_unbias / &(ndarray_sqrt(&mut v_unbias) + eps);
+                    let grad = &m_unbias / &(v_unbias.mapv(f32::sqrt) + eps);
                     $x = &$x - &grad * lr;
                 }
             }
@@ -489,7 +472,7 @@ impl Shape {
                 self.dC = Point::new(0., 0.);
             },
             Bitmap => {
-                let (bitmap_w, bitmap_h): (u32, u32) = self.input_bitmap.dimensions();
+                let (bitmap_h, bitmap_w, _c) = self.bitmap.dim();
                 // self.bitmap += &(&self.dbitmap * lr); // + here because sdf_pix = 0.5 - bitmap[pix]
                 self.dbitmap *= -1.;
                 adam_ndarray!(self.dbitmapm, self.dbitmapv, self.dbitmap, self.bitmap);
@@ -565,7 +548,7 @@ pub fn smoothstep_d(left: f32, right: f32, x: f32) -> f32 {
 
 static mut PRINT_NOW: bool = false;
 
-fn task_1(save_path: &str) {
+fn task1(save_path: &str) {
     println!("\n=== Task: 2 circles, 1 box ");
     let mut start_time = Instant::now();
 
@@ -583,7 +566,7 @@ fn task_1(save_path: &str) {
 
     // ******************** BACKWARD PASS
 
-    let refimg = loadsdf::loadimage("anim/02_reference.png");
+    let refimg = loadsdf::loadimage("resources/02_reference.png");
 
     let mut circ = Shape {
         stype: ShapeType::Circle,
@@ -715,6 +698,141 @@ fn task_1(save_path: &str) {
     start_time = Instant::now();
 }
 
+fn task1_bitmap(save_path: &str) {
+    println!("\n=== Scene");
+    let mut start_time = Instant::now();
+
+    let yellow = vec3::new(255./255., 220./255., 3./255.);
+    let red = vec3::new(255./255., 0., 0.);
+    let black = vec3::new(0., 0., 0.);
+
+    let imgx = 1024;
+    let imgy = imgx;
+    let mut imgbuf = image::ImageBuffer::new(imgx, imgy);
+
+    let th = 0.025;
+
+    std::fs::create_dir("anim");
+
+    // ******************** BACKWARD PASS
+
+    let refimg = loadsdf::loadimage("resources/ACDC_logo.jpg");
+
+    let mut bmp1 = Shape {
+        stype: ShapeType::Bitmap,
+        C: Point::new(-0.5, -0.5),
+        w: 1.,
+        h: 1.,
+        field_scale: 1.,
+        test_bitmap: true,
+        th: th,
+        color: red,
+        ..Default::default()
+    }.build_bitmap(64, 64);
+
+
+    let mut shapes: Vec<Shape> = Vec::new();
+    shapes.push(bmp1);
+    let nshapes = shapes.len();
+
+    
+    let mut smstep: Vec<f32> = vec![0.; nshapes]; // smstep = smoothstep(-sdf)
+    let mut weight1: Vec<f32> = vec![0.; nshapes]; // weight1[i] * smstep[i] * color[i]
+    // compute d pixel/d smoothstep using postfix sum
+    let mut dstep_cum: Vec<vec3> = vec![black; nshapes];
+
+    let iterations = 100;
+    for _it in 0..iterations {
+        // let mut msed = Dp::const_f(0.);
+        let mut mse: f32 = 0.;
+        for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
+            let xf = x as f32 / imgx as f32 - 0.5;
+            let yf = y as f32 / imgy as f32 - 0.5;
+            //let r = (xf / imgx as f32 * 128.0) as u8;
+            //let b = (yf / imgy as f32 * 128.0) as u8;
+
+            // again forward pass
+            let p: Point = Point::new(xf, yf);
+            let mut out_color = black;
+
+            // let sdf = circ.distance(p);
+            // let w = smoothstep(0., th, -sdf);
+            for i in 0..nshapes {
+                smstep[i] = shapes[i].distance_alpha(p);
+                if i == 0 {
+                    weight1[i] = 1.;
+                } else {
+                    weight1[i] = 1. - weight1[i - 1] * smstep[i - 1];
+                }
+                out_color = out_color + shapes[i].color * (weight1[i] * smstep[i]);
+            }
+
+
+            // *** Compute derivatives, MSE
+            let pix = refimg.get_pixel(x, y).0;
+            let pixref = vec3::new(pix[0] as f32 / 255., pix[1] as f32 / 255., pix[2] as f32 / 255.);
+            let pixdif = out_color - pixref;
+
+            let pixmse = pixdif.dot(&pixdif); // sum of squares
+
+            // compute postfix sums from end to begin for d pixel/d smoothstep
+            dstep_cum[nshapes-1] = shapes[nshapes-1].color;
+            for i in 1..nshapes {
+                let j = nshapes - i - 1;
+                // had to derive this formula
+                dstep_cum[j] = shapes[j].color + dstep_cum[j+1] * (-smstep[j+1]);
+            }
+
+            // *** pass derivative to each shape
+            for i in 0..nshapes {
+                // 3 components in derivative: rgb
+                let dpixdw: vec3 = dstep_cum[i] * weight1[i];
+                let dldw = pixdif.dot(&dpixdw) * 2.; // coors are factored out of rgb channels, sum is ok
+                
+                let dpixdrgb = weight1[i] * smstep[i];
+                let drgb = pixdif * dpixdrgb;
+
+                shapes[i].backward(p, dldw, drgb);
+            }
+
+            unsafe { PRINT_NOW = false; }
+            
+            mse += pixmse;
+
+            
+            out_color = out_color * 255.;
+            *pixel = image::Rgb([
+                out_color.x as u8,
+                out_color.y as u8,
+                out_color.z as u8]);
+        }
+        mse = mse / imgx as f32 / imgy as f32;
+        println!("mse={:.9}", mse);
+        let mut lr = 0.02;
+        for i in 0..nshapes {
+            shapes[i].step(lr);
+        }
+        
+        
+        if _it == iterations - 1 {
+            let (dh, dw, _dc) = shapes[0].bitmap.dim();
+            let mut img: RgbImage = image::ImageBuffer::new(dw as u32, dh as u32);
+            for (x, y, pixel) in img.enumerate_pixels_mut() {
+                let v = (shapes[0].bitmap[[y as usize, x as usize, 0]] - 0.5) * 255.;
+                *pixel = image::Rgb([
+                    v as u8,
+                    v as u8,
+                    v as u8]);
+            }
+            img.save("anim/sdf.png");  
+
+            let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
+            imgbuf.save(filename).unwrap();
+        }
+        
+    }
+}
+
 fn small(save_path: &str) {
     println!("\n=== Scene");
     let mut start_time = Instant::now();
@@ -833,49 +951,10 @@ fn small(save_path: &str) {
 
     // ******************** BACKWARD PASS
 
-    let refimg = loadsdf::loadimage("anim/ACDC_logo.jpg"); // anim/reference.png
-
-    let mut circ = Shape {
-        stype: ShapeType::Circle,
-        C: Point::new(0.2, 0.2),
-        r: 0.1,
-        th: th,
-        color: vec3::new(0.543, 0.2232, 0.42),
-        ..Default::default()
-    };
-
-    let mut circ2 = Shape {
-        stype: ShapeType::Circle,
-        C: Point::new(-0.27, 0.22),
-        r: 0.12,
-        th: th,
-        color: vec3::new(0.1, 0.6, 1.),
-        ..Default::default()
-    };
-
-    let mut rect = Shape {
-        stype: ShapeType::Rectangle,
-        C: Point::new(-0.19, -0.22),
-        w: 0.25,
-        h: 0.25,
-        th: th,
-        color: vec3::new(0.7, 0.7, 0.),
-        ..Default::default()
-    };
-
-    let mut tri = Shape {
-        stype: ShapeType::Triangle,
-        A: Point::new(0.4, 0.5),
-        B: Point::new(-0.4, 0.2),
-        C: Point::new(-0.3, -0.5),
-        th: th,
-        color: red,
-        ..Default::default()
-    }.build();
+    let refimg = loadsdf::loadimage("resources/ACDC_logo.jpg");
 
     let mut bmp1 = Shape {
         stype: ShapeType::Bitmap,
-        input_bitmap: loadsdf::loadsdf("anim/reference.png"),
         C: Point::new(-0.5, -0.5),
         w: 1.,
         h: 1.,
@@ -884,9 +963,7 @@ fn small(save_path: &str) {
         th: th,
         color: red,
         ..Default::default()
-    }.build();
-
-    println!("SDF shape {}", bmp1.input_bitmap.width());
+    }.build_bitmap(64, 64);
 
 
     let mut shapes: Vec<Shape> = Vec::new();
@@ -899,7 +976,8 @@ fn small(save_path: &str) {
     // compute d pixel/d smoothstep using postfix sum
     let mut dstep_cum: Vec<vec3> = vec![black; nshapes];
 
-    for _it in 0..100 {
+    let iterations = 100;
+    for _it in 0..iterations {
         // let mut msed = Dp::const_f(0.);
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
@@ -957,8 +1035,6 @@ fn small(save_path: &str) {
                 shapes[i].backward(p, dldw, drgb);
             }
 
-            
-
             unsafe { PRINT_NOW = false; }
             
             mse += pixmse;
@@ -972,25 +1048,28 @@ fn small(save_path: &str) {
         }
         mse = mse / imgx as f32 / imgy as f32;
         println!("mse={:.9}", mse);
-        let mut lr = 0.01;
+        let mut lr = 0.02;
         for i in 0..nshapes {
             shapes[i].step(lr);
         }
+        
+        
+        if _it == iterations - 1 {
+            let (dh, dw, _dc) = shapes[0].bitmap.dim();
+            let mut img: RgbImage = image::ImageBuffer::new(dw as u32, dh as u32);
+            for (x, y, pixel) in img.enumerate_pixels_mut() {
+                let v = (shapes[0].bitmap[[y as usize, x as usize, 0]] - 0.5) * 255.;
+                *pixel = image::Rgb([
+                    v as u8,
+                    v as u8,
+                    v as u8]);
+            }
+            img.save("anim/sdf.png");  
 
-        // let (dh, dw, _dc) = shapes[0].dbitmap.dim();
-        // let mut img: RgbImage = image::ImageBuffer::new(dw as u32, dh as u32);
-        // for (x, y, pixel) in img.enumerate_pixels_mut() {
-        //     let v = (shapes[0].dbitmap[[y as usize, x as usize, 0]] + 10.) * 10.;
-        //     *pixel = image::Rgb([
-        //         v as u8,
-        //         v as u8,
-        //         v as u8]);
-        // }
-        // img.save("hello.jpg");  
+            let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
+            imgbuf.save(filename).unwrap();
+        }
         
-        
-        let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
-        imgbuf.save(filename).unwrap();
     }
 }
 
@@ -998,8 +1077,10 @@ fn small(save_path: &str) {
 
 fn main() {
     // let guard = pprof::ProfilerGuardBuilder::default().frequency(1000).blocklist(&["libc", "libgcc", "pthread", "vdso"]).build().unwrap();
-    small("fractal");
-    // task_1("fractal");
+    
+    // task1("fractal");
+    task1_bitmap("fractal");
+    // small("fractal");
 
     // if let Ok(report) = guard.report().build() {
     //     let file = File::create("flamegraph.svg").unwrap();

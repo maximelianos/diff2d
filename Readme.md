@@ -63,6 +63,12 @@ http://aturon.github.io/tech/2018/07/25/cargo-version-selection/
 nalgebra dot product
 https://zsiciarz.github.io/24daysofrust/book/vol1/day14.html
 
+ndarray
+https://github.com/rust-ndarray/ndarray/blob/master/README-quick-start.md
+
+ndarray sqrt
+https://docs.rs/ndarray/0.13.0/ndarray/doc/ndarray_for_numpy_users/index.html
+
 ## Changelog
 
 v1
