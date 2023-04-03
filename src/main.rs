@@ -5,9 +5,10 @@ mod libdif;
 mod point;
 use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap}, time::Instant, rc::Rc, cell::RefCell, borrow::Borrow, fs::File};
 use nalgebra as na;
+use ndarray::{Array3, Array};
 
 use grid::Grid;
-use image::{GrayImage, GenericImageView};
+use image::{GrayImage, GenericImageView, RgbImage};
 use libdif::{DGraph, Graph, Dp, GRAPH};
 use point::Point;
 
@@ -76,6 +77,17 @@ struct Shape {
     dcol: vec3,
     dcolm: vec3,
     dcolv: vec3,
+
+    // image sdf
+    // C - corner
+    // w, h - size
+    input_bitmap: GrayImage,
+    test_bitmap: bool,
+    bitmap: Array3<f32>,
+    dbitmap: Array3<f32>,
+    dbitmapm: Array3<f32>,
+    dbitmapv: Array3<f32>,
+    field_scale: f32, // d *= field_scale
 }
 
 type vec3 = na::Vector3::<f32>;
@@ -84,26 +96,48 @@ fn vec3_sqrt(v: vec3) -> vec3 {
     vec3::new(v.x.sqrt(), v.y.sqrt(), v.z.sqrt())
 }
 
+fn ndarray_sqrt(arr: &mut Array3<f32>) -> &Array3<f32> {
+    let dim: (usize, usize, usize) = arr.dim();
+    for i in 0..dim.0 {
+        for j in 0..dim.1 {
+            arr[[i, j, 0]] = arr[[i, j, 0]].sqrt();
+        }
+    }
+    arr
+}
+
 impl Shape {
-    fn build(&self) -> Self {
-        let mut res = Shape { ..*self };
+    fn build(mut self) -> Self {
         use ShapeType::*;
-        match res.stype {
+        match self.stype {
             Triangle => {
                 // order points in clockwise manner
-                let a = res.B - res.A;
-                let b = res.C - res.A;
+                let a = self.B - self.A;
+                let b = self.C - self.A;
                 //println!("> Cross product: {}", a.cross(b));
                 if a.cross(b) > 0. {
-                    let t = res.B;
-                    res.B = res.C;
-                    res.C = t;
+                    let t = self.B;
+                    self.B = self.C;
+                    self.C = t;
                 }
 
             },
+            Bitmap => {
+                let (bitmap_w, bitmap_h): (u32, u32) = self.input_bitmap.dimensions();
+                self.bitmap = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
+                for (x, y, pixel) in self.input_bitmap.enumerate_pixels_mut() {
+                    self.bitmap[[y as usize, x as usize, 0]] = pixel.0[0] as f32 / 255.;
+                    if self.test_bitmap {
+                        self.bitmap[[y as usize, x as usize, 0]] = 0.59;
+                    }
+                }
+                self.dbitmap = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
+                self.dbitmapm = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
+                self.dbitmapv = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
+            }
             _ => ()
         }
-        return res;
+        return self;
     }
 
     fn distance_pre(&mut self, point: Point) -> f32 {
@@ -212,6 +246,39 @@ impl Shape {
                     }
                 }
             },
+            Bitmap => {
+                let (bitmap_w, bitmap_h): (u32, u32) = self.input_bitmap.dimensions();
+                let q = (p - self.C) * Point::new(bitmap_w as f32 / self.w, bitmap_h as f32 / self.h);
+
+                let scale: f32 = if self.field_scale != 0. { self.field_scale } else { 1. };
+                let dist_large: f32 = 1000.;
+
+                let x = q.x.floor() as i32;
+                let y = q.y.floor() as i32;
+
+                let kx = q.x - x as f32;
+                let ky = q.y - y as f32;
+
+                let k1 = (1.-kx)*(1.-ky);
+                let k2 = (1.-kx)*(ky);
+                let k3 = (kx)*(ky);
+                let k4 = (kx)*(1.-ky);
+
+                let mut get_sdf = |px: i32, py: i32, k: f32| -> f32 {
+                    if 0 <= px && px < bitmap_w as i32 && 0 <= py && py < bitmap_h as i32 {
+                        0.5 - self.bitmap[[py as usize, px as usize, 0]]
+                    } else {
+                        dist_large
+                    }
+                };
+                
+                let v1 = get_sdf(x, y, k1);
+                let v2 = get_sdf(x, y+1, k2);
+                let v3 = get_sdf(x+1, y+1, k3);
+                let v4 = get_sdf(x+1, y, k4);
+                
+                sdf = (k1*v1 + k2*v2 + k3*v3 + k4*v4)/4.*scale; // TODO: this is not true distance, please think about it
+            }
             _ => panic!("Unimplemented shape")
         }
         self.sdf = sdf;
@@ -226,11 +293,6 @@ impl Shape {
     fn backward(&mut self, point: Point, dldw: f32, drgb: vec3) {
         let dldsdf = dldw * smoothstep_d(0., self.th, -self.sdf) * (-1.);
         let p = point;
-        unsafe {
-            if PRINT_NOW {
-                println!("SDF={}", self.sdf);
-            }
-        }
 
         self.dcol += drgb;
 
@@ -258,6 +320,40 @@ impl Shape {
                 self.dsdfB = Point::new(0., 0.);
                 self.dsdfC = Point::new(0., 0.);
             },
+            Bitmap => {
+                let (bitmap_w, bitmap_h): (u32, u32) = self.input_bitmap.dimensions();
+                let q = (p - self.C) * Point::new(bitmap_w as f32 / self.w, bitmap_h as f32 / self.h);
+
+                let scale: f32 = if self.field_scale != 0. { self.field_scale } else { 1. };
+                let dist_large: f32 = 1000.;
+
+                let x = q.x.floor() as i32;
+                let y = q.y.floor() as i32;
+
+                let kx = q.x - x as f32;
+                let ky = q.y - y as f32;
+
+                let k1 = (1.-kx)*(1.-ky);
+                let k2 = (1.-kx)*(ky);
+                let k3 = (kx)*(ky);
+                let k4 = (kx)*(1.-ky);
+
+                let mut get_sdf = |px: i32, py: i32, k: f32| -> f32 {
+                    if 0 <= px && px < bitmap_w as i32 && 0 <= py && py < bitmap_h as i32 {
+                        self.dbitmap[[py as usize, px as usize, 0]] += k / 4. * dldsdf;
+                        0.
+                    } else {
+                        dist_large
+                    }
+                };
+                
+                let v1 = get_sdf(x, y, k1);
+                let v2 = get_sdf(x, y+1, k2);
+                let v3 = get_sdf(x+1, y+1, k3);
+                let v4 = get_sdf(x+1, y, k4);
+                
+                // sdf = (k1*v1 + k2*v2 + k3*v3 + k4*v4)/4.*scale; // TODO: this is not true distance, please think about it
+            },
             _ => panic!("Unimplemented backward")
         }
         
@@ -281,8 +377,8 @@ impl Shape {
                     // $a and $b will be templated using the value/variable provided to macro
                     $m = $m * beta1 + $g * (1. - beta1);
                     $v = $v * beta2 + $g * $g * (1. - beta2);
-                    let m_unbias = $m / (1. - beta1.powf(k));
-                    let v_unbias = $v / (1. - beta2.powf(k));
+                    let m_unbias = $m * (1. / (1. - beta1.powf(k)));
+                    let v_unbias = $v * (1. / (1. - beta2.powf(k)));
                     let grad = m_unbias / (v_unbias.powf(0.5) + eps);
                     $x = $x - grad * lr;
                 }
@@ -301,14 +397,34 @@ impl Shape {
                     $v = $v * beta2 + $g.component_mul(&$g) * (1. - beta2);
                     let m_unbias = $m * (1. / (1. - beta1.powf(k)));
                     let v_unbias = $v * (1. / (1. - beta2.powf(k)));
-                    let grad = m_unbias.component_div(&(vec3_sqrt(v_unbias) + vec3_eps));
+                    let grad = m_unbias.component_div( &(vec3_sqrt(v_unbias) + vec3_eps) );
                     $x = $x - grad * lr;
                 }
             }
         }
 
+        macro_rules! adam_ndarray{
+            // match like arm for macro
+               ($m:expr,$v:expr,$g:expr,$x:expr)=>{
+                // input: prev momentum, prev v, cur grad, prev x, lr
+                // output: new momentum, new v, new wx
+                // macro expand to this code
+                {
+                    // $a and $b will be templated using the value/variable provided to macro
+                    $m = &$m * beta1 + &$g * (1. - beta1);
+                    $v = &$v * beta2 + &$g * &$g * (1. - beta2);
+                    let m_unbias = &$m * (1. / (1. - beta1.powf(k)));
+                    let mut v_unbias = &$v * (1. / (1. - beta2.powf(k)));
+                    let grad = &m_unbias / &(ndarray_sqrt(&mut v_unbias) + eps);
+                    $x = &$x - &grad * lr;
+                }
+            }
+        }
+
+        
+
         adam_vec!(self.dcolm, self.dcolv, self.dcol, self.color);
-        // self.color = self.color - self.dcol * lr;
+        // self.color = self.color - self.dcol * (lr*0.0001);
         self.dcol = vec3::new(0., 0., 0.);
 
         use ShapeType::*;
@@ -372,6 +488,13 @@ impl Shape {
                 self.dB = Point::new(0., 0.);
                 self.dC = Point::new(0., 0.);
             },
+            Bitmap => {
+                let (bitmap_w, bitmap_h): (u32, u32) = self.input_bitmap.dimensions();
+                // self.bitmap += &(&self.dbitmap * lr); // + here because sdf_pix = 0.5 - bitmap[pix]
+                self.dbitmap *= -1.;
+                adam_ndarray!(self.dbitmapm, self.dbitmapv, self.dbitmap, self.bitmap);
+                self.dbitmap = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
+            }
             _ => ()
         }
     }
@@ -592,21 +715,21 @@ fn task_1(save_path: &str) {
     start_time = Instant::now();
 }
 
-fn small(scene: SceneType, save_path: &str) {
-    println!("\n=== Scene {:?}", scene);
+fn small(save_path: &str) {
+    println!("\n=== Scene");
     let mut start_time = Instant::now();
 
     let yellow = vec3::new(255./255., 220./255., 3./255.);
     let red = vec3::new(255./255., 0., 0.);
     let black = vec3::new(0., 0., 0.);
 
-    let imgx = 256;
+    let imgx = 1024;
     let imgy = imgx;
     let mut imgbuf = image::ImageBuffer::new(imgx, imgy);
 
     let th = 0.025;
 
-    {
+    /* {
         let mut circ = Shape {
             stype: ShapeType::Circle,
             C: Point::new(0.2, 0.2),
@@ -644,10 +767,20 @@ fn small(scene: SceneType, save_path: &str) {
             ..Default::default()
         }.build();
 
+        let mut bmp1 = Shape {
+            stype: ShapeType::Bitmap,
+            input_bitmap: loadsdf::loadsdf("resources/m_sdf.png"),
+            C: Point::new(-0.5, -0.5),
+            w: 1.,
+            h: 1.,
+            field_scale: 1.,
+            th: th,
+            color: red,
+            ..Default::default()
+        }.build();
+
         let mut shapes: Vec<Shape> = Vec::new();
-        shapes.push(circ);
-        shapes.push(circ2);
-        shapes.push(rect);
+        shapes.push(bmp1);
         let nshapes = shapes.len();
 
         let mut smstep: Vec<f32> = vec![0.; nshapes]; // smstep = smoothstep(-sdf)
@@ -695,12 +828,12 @@ fn small(scene: SceneType, save_path: &str) {
 
         // Save the image as “fractal.png”, the format is deduced from the path
         std::fs::create_dir("anim");
-        // imgbuf.save("anim/reference.png").unwrap();
-    }
+        imgbuf.save("anim/reference.png");
+    }*/
 
     // ******************** BACKWARD PASS
 
-    let refimg = loadsdf::loadimage("anim/reference.png");
+    let refimg = loadsdf::loadimage("anim/ACDC_logo.jpg"); // anim/reference.png
 
     let mut circ = Shape {
         stype: ShapeType::Circle,
@@ -740,11 +873,24 @@ fn small(scene: SceneType, save_path: &str) {
         ..Default::default()
     }.build();
 
+    let mut bmp1 = Shape {
+        stype: ShapeType::Bitmap,
+        input_bitmap: loadsdf::loadsdf("anim/reference.png"),
+        C: Point::new(-0.5, -0.5),
+        w: 1.,
+        h: 1.,
+        field_scale: 1.,
+        test_bitmap: true,
+        th: th,
+        color: red,
+        ..Default::default()
+    }.build();
+
+    println!("SDF shape {}", bmp1.input_bitmap.width());
+
 
     let mut shapes: Vec<Shape> = Vec::new();
-    shapes.push(circ);
-    shapes.push(circ2);
-    shapes.push(rect);
+    shapes.push(bmp1);
     let nshapes = shapes.len();
 
     
@@ -753,7 +899,7 @@ fn small(scene: SceneType, save_path: &str) {
     // compute d pixel/d smoothstep using postfix sum
     let mut dstep_cum: Vec<vec3> = vec![black; nshapes];
 
-    for _it in 0..40 {
+    for _it in 0..100 {
         // let mut msed = Dp::const_f(0.);
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
@@ -761,6 +907,11 @@ fn small(scene: SceneType, save_path: &str) {
             let yf = y as f32 / imgy as f32 - 0.5;
             //let r = (xf / imgx as f32 * 128.0) as u8;
             //let b = (yf / imgy as f32 * 128.0) as u8;
+
+            // if (x == imgx / 2) && y == imgy / 2 {
+            //     unsafe { PRINT_NOW = true; }
+            //     println!("> pixel x={} y={}", x, y);
+            // }
 
             // again forward pass
             let p: Point = Point::new(xf, yf);
@@ -794,7 +945,7 @@ fn small(scene: SceneType, save_path: &str) {
                 dstep_cum[j] = shapes[j].color + dstep_cum[j+1] * (-smstep[j+1]);
             }
 
-            // pass derivative to each shape
+            // *** pass derivative to each shape
             for i in 0..nshapes {
                 // 3 components in derivative: rgb
                 let dpixdw: vec3 = dstep_cum[i] * weight1[i];
@@ -803,21 +954,12 @@ fn small(scene: SceneType, save_path: &str) {
                 let dpixdrgb = weight1[i] * smstep[i];
                 let drgb = pixdif * dpixdrgb;
 
-                // if x == imgx / 2 && y == imgy / 2 {
-                //     println!("Pixel color={:?} dpix/dw={:?}", shapes[0].color, dpixdw);
-                // }
-                // if x == imgx / 2 && (y == imgy / 4 || y == imgy / 4 * 3 || y == imgy/2) {
-                //     unsafe {
-                //         PRINT_NOW = true;
-                //     }
-                //     println!("> x={} y={} dldw={}", x, y, dldw);
-                //     println!("dpixw.r={} out.r={} ref.r={} dldw={}", dpixdw.r, out_color.r, - pixref.r, dldw);
-                // }
                 shapes[i].backward(p, dldw, drgb);
-                unsafe {
-                    PRINT_NOW = false;
-                }
             }
+
+            
+
+            unsafe { PRINT_NOW = false; }
             
             mse += pixmse;
 
@@ -834,6 +976,17 @@ fn small(scene: SceneType, save_path: &str) {
         for i in 0..nshapes {
             shapes[i].step(lr);
         }
+
+        // let (dh, dw, _dc) = shapes[0].dbitmap.dim();
+        // let mut img: RgbImage = image::ImageBuffer::new(dw as u32, dh as u32);
+        // for (x, y, pixel) in img.enumerate_pixels_mut() {
+        //     let v = (shapes[0].dbitmap[[y as usize, x as usize, 0]] + 10.) * 10.;
+        //     *pixel = image::Rgb([
+        //         v as u8,
+        //         v as u8,
+        //         v as u8]);
+        // }
+        // img.save("hello.jpg");  
         
         
         let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
@@ -845,8 +998,8 @@ fn small(scene: SceneType, save_path: &str) {
 
 fn main() {
     // let guard = pprof::ProfilerGuardBuilder::default().frequency(1000).blocklist(&["libc", "libgcc", "pthread", "vdso"]).build().unwrap();
-    // small(SceneType::All, "fractal");
-    task_1("fractal");
+    small("fractal");
+    // task_1("fractal");
 
     // if let Ok(report) = guard.report().build() {
     //     let file = File::create("flamegraph.svg").unwrap();

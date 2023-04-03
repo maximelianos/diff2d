@@ -32,10 +32,10 @@ pub fn loadimage(path: &str) -> DynamicImage {
     let img = image::open(path).unwrap();
 
     // The dimensions method returns the images width and height.
-    println!("dimensions {:?}", img.dimensions());
+    // println!("dimensions {:?}", img.dimensions());
 
     // The color method returns the image's `ColorType`.
-    println!("{:?}", img.color());
+    // println!("{:?}", img.color());
 
     return img;
 }
