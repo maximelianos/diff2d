@@ -486,6 +486,7 @@ impl Shape {
 #[derive(Default)]
 struct TriangleMesh {
     verticies: Vec<Point>,
+    dverticies: Vec<Point>,
     indices: Vec<u32>, // triangles, must be counter-clockwise
     colors: Vec<vec3>, // for each triangle face
     tc: Vec<Point>, // texture coors for each vertex
@@ -496,6 +497,9 @@ struct TriangleMesh {
 
 impl TriangleMesh {
     fn build(mut self, zero_init: bool, bitmap_h: usize, bitmap_w: usize) -> Self {
+        self.dverticies.resize(self.verticies.len(), Point::default());
+
+        // init texture
         let h: usize;
         let w: usize;
         if !zero_init {
@@ -560,8 +564,8 @@ impl TriangleMesh {
                 let xa = perpa / s;
                 let xb = perpb / s;
                 let xc = perpc / s;
-                // interpolate attributes
-                // texture
+
+                // interpolate texture attribute
                 let mut sample_texture = |p: Point| -> vec3 {
                     let (bitmap_h, bitmap_w, _c): (usize, usize, usize) = self.texture.dim();
                     let q = p * Point::new(bitmap_w as f32, bitmap_h as f32);
@@ -603,6 +607,31 @@ impl TriangleMesh {
                     k1*v1 + k2*v2 + k3*v3 + k4*v4
                 };
 
+                // *** Derivative of points
+                if backward {
+                    let na = a.normal();
+                    let nb = b.normal();
+                    let nc = c.normal();
+                    let na = na / na.len();
+                    let nb = nb / nb.len();
+                    let nc = nc / nc.len();
+                    if perpa < 0.001 { // TODO which value to use here?
+                        let t = pb.len() / b.len();
+                        self.dverticies[ib] += (nb * (1. - t)) * dldcolor.x;
+                        self.dverticies[ic] += (nb * t) * dldcolor.x;
+                    }
+                    if perpb < 0.001 {
+                        let t = pc.len() / c.len();
+                        self.dverticies[ic] += (nc * (1. - t)) * dldcolor.x;
+                        self.dverticies[ia] += (nc * t) * dldcolor.x;
+                    }
+                    if perpc < 0.001 {
+                        let t = pa.len() / a.len();
+                        self.dverticies[ia] += (na * (1. - t)) * dldcolor.x;
+                        self.dverticies[ib] += (na * t) * dldcolor.x;
+                    }
+                }
+
                 // let col =  (
                 //     self.colors[ia] * xa
                 //     + self.colors[ib] * xb
@@ -624,7 +653,10 @@ impl TriangleMesh {
     fn step(&mut self, lr: f32) {
         self.texture = &self.texture - &self.dtexture * lr;
         self.dtexture.fill(0.); // TODO use this in other places
-
+        for i in 0..self.verticies.len() {
+            self.verticies[i] = self.verticies[i] - self.dverticies[i] * lr * (-0.01);
+            self.dverticies[i] = Point::default();
+        }
     }
 }
 
@@ -1055,7 +1087,8 @@ fn small(save_path: &str) {
     let refimg = loadsdf::loadimage("resources/mesh.png");
 
     let mut mesh: TriangleMesh = TriangleMesh { 
-        verticies: vec![Point::new(-0.3, -0.2), Point::new(0.1, -0.1), Point::new(0.2, 0.1)], 
+        //verticies: vec![Point::new(-0.3, -0.2), Point::new(0.1, -0.1), Point::new(0.2, 0.1)], 
+        verticies: vec![Point::new(-0.3, -0.3), Point::new(0.1, -0.1), Point::new(0.2, 0.1)], 
         indices: vec![0, 1, 2], 
         colors: vec![yellow, red, black],
         tc: vec![Point::new(0., 0.), Point::new(1., 0.), Point::new(1., 1.)],
@@ -1087,7 +1120,7 @@ fn small(save_path: &str) {
         println!("Initialization took {:?}", start_time.elapsed());
         start_time = Instant::now();
 
-        for _it in 0..20 {
+        for _it in 0..40 {
             let mut mse = 0.;
 
             // Iterate over the coordinates and pixels of the image
@@ -1159,6 +1192,8 @@ fn small(save_path: &str) {
                     out_color.z as u8]);
             }
             println!("MSE={:.3}", mse);
+            let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
+            imgbuf.save(filename);
 
             let lr = 0.01;
             mesh.step(lr);

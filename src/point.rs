@@ -36,6 +36,10 @@ impl Point {
     pub fn powf(&self, alpha: f32) -> Point {
         return Point::new(self.x.powf(alpha), self.y.powf(alpha));
     }
+
+    pub fn normal(&self) -> Point {
+        return Point::new(-self.y, self.x);
+    }
 }
 
 impl ops::Add<Point> for Point {
@@ -53,6 +57,13 @@ impl ops::Add<f32> for Point {
     fn add(self, _rhs: f32) -> Point {
         //println!("> Point.add(Point) was called");
         return Point {x: self.x + _rhs, y: self.y + _rhs};
+    }
+}
+
+impl ops::AddAssign<Point> for Point {
+    fn add_assign(&mut self, _rhs: Point) {
+        self.x += _rhs.x;
+        self.y += _rhs.y;
     }
 }
 
