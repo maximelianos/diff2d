@@ -549,6 +549,7 @@ impl TriangleMesh {
             let cb = b.cross(pb);
             let cc = c.cross(pc);
             
+            
             unsafe {
                 if PRINT_NOW {
                     println!("A={:?} B={:?} C={:?}", A, B, C);
@@ -609,26 +610,25 @@ impl TriangleMesh {
 
                 // *** Derivative of points
                 if backward {
-                    let na = a.normal();
-                    let nb = b.normal();
-                    let nc = c.normal();
-                    let na = na / na.len();
-                    let nb = nb / nb.len();
-                    let nc = nc / nc.len();
+                    let na = a.normal() / a.len();
+                    let nb = b.normal() / b.len();
+                    let nc = c.normal() / c.len();
+                    
+                    let dldcolor_sum = dldcolor.dot(&vec3::new(1., 1., 1.));
                     if perpa < 0.001 { // TODO which value to use here?
-                        let t = pb.len() / b.len();
-                        self.dverticies[ib] += (nb * (1. - t)) * dldcolor.x;
-                        self.dverticies[ic] += (nb * t) * dldcolor.x;
+                        let t = b.proj(pb) / b.len();
+                        self.dverticies[ib] += (nb * (1. - t)) * dldcolor_sum;
+                        self.dverticies[ic] += (nb * t) * dldcolor_sum;
                     }
                     if perpb < 0.001 {
-                        let t = pc.len() / c.len();
-                        self.dverticies[ic] += (nc * (1. - t)) * dldcolor.x;
-                        self.dverticies[ia] += (nc * t) * dldcolor.x;
+                        let t = c.proj(pc) / c.len();
+                        self.dverticies[ic] += (nc * (1. - t)) * dldcolor_sum;
+                        self.dverticies[ia] += (nc * t) * dldcolor_sum;
                     }
                     if perpc < 0.001 {
-                        let t = pa.len() / a.len();
-                        self.dverticies[ia] += (na * (1. - t)) * dldcolor.x;
-                        self.dverticies[ib] += (na * t) * dldcolor.x;
+                        let t = a.proj(pa) / a.len();
+                        self.dverticies[ia] += (na * (1. - t)) * dldcolor_sum;
+                        self.dverticies[ib] += (na * t) * dldcolor_sum;
                     }
                 }
 
@@ -651,10 +651,11 @@ impl TriangleMesh {
     }
 
     fn step(&mut self, lr: f32) {
-        self.texture = &self.texture - &self.dtexture * lr;
+        self.texture = &self.texture - &self.dtexture * lr * 1.;
         self.dtexture.fill(0.); // TODO use this in other places
+
         for i in 0..self.verticies.len() {
-            self.verticies[i] = self.verticies[i] - self.dverticies[i] * lr * (-0.01);
+            self.verticies[i] = self.verticies[i] - self.dverticies[i] * lr * (-0.005);
             self.dverticies[i] = Point::default();
         }
     }
@@ -1120,7 +1121,7 @@ fn small(save_path: &str) {
         println!("Initialization took {:?}", start_time.elapsed());
         start_time = Instant::now();
 
-        for _it in 0..40 {
+        for _it in 0..50 {
             let mut mse = 0.;
 
             // Iterate over the coordinates and pixels of the image
@@ -1153,13 +1154,19 @@ fn small(save_path: &str) {
                 // }
 
                 let mut mesh_color = black;
-                if mesh.render(p, &mut mesh_color, false, vec3::default()) {
-                    out_color = mesh_color;
+                let nsamples = 4;
+                for sample in 0..nsamples {
+                    let xa = (sample % 2) as f32;
+                    let ya = (sample / 2) as f32;
+                    let p_add = Point::new(
+                        (0.25 + xa * 0.5) / imgx as f32,
+                        (0.25 + ya * 0.5) / imgy as f32);
+                    let p_sample = p + p_add;
+                    if mesh.render(p_sample, &mut mesh_color, false, vec3::default()) {
+                        out_color = out_color + mesh_color / nsamples as f32;
+                    }
                 }
-
-
-
-
+                
 
                 // *** Compute derivatives, MSE
                 let pix = refimg.get_pixel(x, y).0;
@@ -1167,19 +1174,13 @@ fn small(save_path: &str) {
                 let pixdif = out_color - pixref;
 
                 let pixmse = pixdif.dot(&pixdif); // sum of squares
+                mse += pixmse;
 
 
                 // *** pass derivative to each shape
                 let dldi = pixdif * 2.;
                 mesh.render(p, &mut mesh_color, true, dldi);
-
-                unsafe { PRINT_NOW = false; }
                 
-                mse += pixmse;
-
-
-                
-
                 unsafe {
                     PRINT_NOW = false;
                 }
@@ -1191,7 +1192,9 @@ fn small(save_path: &str) {
                     out_color.y as u8,
                     out_color.z as u8]);
             }
+            mse = mse / imgx as f32 / imgy as f32;
             println!("MSE={:.3}", mse);
+
             let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
             imgbuf.save(filename);
 
