@@ -491,10 +491,14 @@ struct TriangleMesh {
     dverticiesv: Vec<Point>,
 
     indices: Vec<u32>, // triangles, must be counter-clockwise (in standard non-flipped XY plane!!!)
-    colors: Vec<vec3>, // for each triangle face
+    colors: Vec<vec3>, // for each vertex
     is_textured: Vec<bool>, // each face is colored or textured
     tc: Vec<Point>, // texture coors for each vertex
     input_texture: RgbImage, // type int [0, 255]
+
+    dcolors: Vec<vec3>,
+    dcolorsm: Vec<vec3>,
+    dcolorsv: Vec<vec3>,
 
     texture: Array3<f32>, // type f32 [0, 1]
     dtexture: Array3<f32>,
@@ -507,6 +511,10 @@ impl TriangleMesh {
         self.dverticies.resize(self.verticies.len(), Point::default());
         self.dverticiesm.resize(self.verticies.len(), Point::default());
         self.dverticiesv.resize(self.verticies.len(), Point::default());
+
+        self.dcolors.resize(self.verticies.len(), vec3::default());
+        self.dcolorsm.resize(self.verticies.len(), vec3::default());
+        self.dcolorsv.resize(self.verticies.len(), vec3::default());
 
         // init texture
         let h: usize;
@@ -651,6 +659,9 @@ impl TriangleMesh {
                         + self.tc[ic] * xc
                     );
                 } else {
+                    self.dcolors[ia] += dldcolor * xa;
+                    self.dcolors[ib] += dldcolor * xb;
+                    self.dcolors[ic] += dldcolor * xc;
                     *color = (
                         self.colors[ia] * xa
                         + self.colors[ib] * xb
@@ -668,6 +679,7 @@ impl TriangleMesh {
         let beta2 = 0.999;
         let k = 1.;
         let eps = 1e-8;
+        let vec3_eps = vec3::new(eps, eps, eps);
 
         macro_rules! adam{
             // match like arm for macro
@@ -682,6 +694,24 @@ impl TriangleMesh {
                     let m_unbias = $m * (1. / (1. - beta1.powf(k)));
                     let v_unbias = $v * (1. / (1. - beta2.powf(k)));
                     let grad = m_unbias / (v_unbias.powf(0.5) + eps);
+                    $x = $x - grad * $lr;
+                }
+            }
+        }
+
+        macro_rules! adam_vec{
+            // match like arm for macro
+               ($m:expr,$v:expr,$g:expr,$x:expr,$lr:expr)=>{
+                // input: prev momentum, prev v, cur grad, prev x, lr
+                // output: new momentum, new v, new x
+                // macro expand to this code
+                {
+                    // $a and $b will be templated using the value/variable provided to macro
+                    $m = $m * beta1 + $g * (1. - beta1);
+                    $v = $v * beta2 + $g.component_mul(&$g) * (1. - beta2);
+                    let m_unbias = $m * (1. / (1. - beta1.powf(k)));
+                    let v_unbias = $v * (1. / (1. - beta2.powf(k)));
+                    let grad = m_unbias.component_div( &(vec3_sqrt(v_unbias) + vec3_eps) );
                     $x = $x - grad * $lr;
                 }
             }
@@ -710,6 +740,10 @@ impl TriangleMesh {
         self.dtexture.fill(0.); // TODO use this in other places
 
         for i in 0..self.verticies.len() {
+            adam_vec!(self.dcolorsm[i], self.dcolorsv[i], self.dcolors[i], self.colors[i], lr*0.5);
+            // self.colors[i] = self.colors[i] - self.dcolors[i] * lr * 0.001;
+            self.dcolors[i] = vec3::default();
+            
             adam!(self.dverticiesm[i], self.dverticiesv[i], self.dverticies[i], self.verticies[i], lr);
             // self.verticies[i] = self.verticies[i] - self.dverticies[i] * lr * (1.);
             self.dverticies[i] = Point::default();
@@ -1128,7 +1162,7 @@ fn small(save_path: &str) {
 
     // ******************** BACKWARD PASS
 
-    let refimg = loadsdf::loadimage("resources/0_3_reference.png");
+    let refimg = loadsdf::loadimage("resources/01_reference.png");
 
     let mut mesh: TriangleMesh = TriangleMesh { 
         // verticies: vec![Point::new(-0.2, -0.2), Point::new(0.25, -0.25), Point::new(-0.25, 0.25)], 
@@ -1154,21 +1188,33 @@ fn small(save_path: &str) {
 
         input_texture: loadsdf::loadimage("resources/brick.jpg").to_rgb8(),
         ..Default::default()
-    }.build(true, 118, 177);
+    }.build(true, 188, 188);
+
+    let mut circ = Shape {
+        stype: ShapeType::Circle,
+        C: Point::new(0.2, 0.2),
+        r: 0.1,
+        th: th,
+        color: vec3::new(0.543, 0.2232, 0.42),
+        ..Default::default()
+    };
 
     {
         let mut shapes: Vec<Shape> = Vec::new();
+        shapes.push(circ);
         let nshapes = shapes.len();
 
         let mut smstep: Vec<f32> = vec![0.; nshapes]; // smstep = smoothstep(-sdf)
         let mut weight1: Vec<f32> = vec![0.; nshapes]; // weight1[i] * smstep[i] * color[i]
+        // compute d pixel/d smoothstep using postfix sum
+        let mut dstep_cum: Vec<vec3> = vec![black; nshapes];
 
         // Create a new ImgBuf with width: imgx and height: imgy
         
         println!("Initialization took {:?}", start_time.elapsed());
         start_time = Instant::now();
 
-        for _it in 0..50 {
+        for _it in 0..60 {
             let mut mse = 0.;
             // unsafe {
             //     PRINT_NOW = true;
@@ -1236,6 +1282,26 @@ fn small(save_path: &str) {
 
 
                 // *** pass derivative to each shape
+
+                // compute postfix sums from end to begin for d pixel/d smoothstep
+                dstep_cum[nshapes-1] = shapes[nshapes-1].color;
+                for i in 1..nshapes {
+                    let j = nshapes - i - 1;
+                    // had to derive this formula
+                    dstep_cum[j] = shapes[j].color + dstep_cum[j+1] * (-smstep[j+1]);
+                }
+
+                // pass derivative to each shape
+                for i in 0..nshapes {
+                    // 3 components in derivative: rgb
+                    let dpixdw: vec3 = dstep_cum[i] * weight1[i];
+                    let dldw = pixdif.dot(&dpixdw) * 2.; // coors are factored out of rgb channels, sum is ok
+                    
+                    let dpixdrgb = weight1[i] * smstep[i];
+                    let drgb = pixdif * dpixdrgb;
+
+                    shapes[i].backward(p, dldw, drgb);
+                }
                 
     
                 let dldi: vec3 = pixdif * 2.;
@@ -1258,11 +1324,13 @@ fn small(save_path: &str) {
                     out_color.z as u8]);
             }
             mse = mse / imgx as f32 / imgy as f32;
-            println!("MSE={:.3} A={:?}", mse, mesh.verticies[0]);
-            println!("");
+            println!("MSE={:.3}", mse);
 
             let lr = 0.01;
             mesh.step(lr);
+            for i in 0..nshapes {
+                shapes[i].step(lr);
+            }
 
             let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
             imgbuf.save(filename);
