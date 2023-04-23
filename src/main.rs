@@ -4,6 +4,7 @@ mod loadsdf;
 mod libdif;
 mod point;
 use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap}, time::Instant, rc::Rc, cell::RefCell, borrow::Borrow, fs::File};
+use rand;
 use nalgebra as na;
 use ndarray::{Array3, Array};
 
@@ -86,6 +87,8 @@ struct Shape {
     dbitmapm: Array3<f32>,
     dbitmapv: Array3<f32>,
     field_scale: f32, // d *= field_scale
+
+    no_smooth: bool,
 }
 
 type vec3 = na::Vector3::<f32>;
@@ -272,6 +275,7 @@ impl Shape {
 
     fn distance_alpha(&mut self, point: Point) -> f32 {
         let sdf = self.distance_pre(point);
+        if self.no_smooth { return if sdf < 0. {1.} else {0.}; }
         return smoothstep(0., self.th, -sdf);
     }
 
@@ -282,6 +286,37 @@ impl Shape {
         self.dcol += drgb;
 
         use ShapeType::*;
+        // Extra: SDF edge sampling
+        if self.no_smooth {
+            if self.sdf > 0. || self.sdf < -1. / 128. {return};
+            match self.stype {
+                Circle => {
+                    self.dr += dldw;
+                    let normal = p - self.C; // insignificat error
+                    self.dC += normal * dldw;
+                },
+                Rectangle => {
+                    let w2 = self.w / 2.;
+                    let h2 = self.h / 2.;
+
+                    let p = point - self.C;
+                    let y1 = p.y.abs() - h2;
+                    let x1 = p.x.abs() - w2;
+                    if y1 > x1 {
+                        self.dh += dldw; 
+                        let normal = if p.y > 0. {1.} else {-1.};
+                        self.dC += Point::new(0., normal) * dldw;
+                    } else {
+                        self.dw += dldw;
+                        let normal = if p.x > 0. {1.} else {-1.};
+                        self.dC += Point::new(normal, 0.) * dldw;
+                    }
+                },
+                _ => panic!("Unimplemented backward")
+            }
+            return;
+        }
+
         match self.stype {
             Circle => {
                 self.dr = self.dr - dldsdf;
@@ -370,7 +405,7 @@ impl Shape {
 
         macro_rules! adam_vec{
             // match like arm for macro
-               ($m:expr,$v:expr,$g:expr,$x:expr)=>{
+               ($m:expr,$v:expr,$g:expr,$x:expr,$lr:expr)=>{
                 // input: prev momentum, prev v, cur grad, prev x, lr
                 // output: new momentum, new v, new x
                 // macro expand to this code
@@ -381,7 +416,7 @@ impl Shape {
                     let m_unbias = $m * (1. / (1. - beta1.powf(k)));
                     let v_unbias = $v * (1. / (1. - beta2.powf(k)));
                     let grad = m_unbias.component_div( &(vec3_sqrt(v_unbias) + vec3_eps) );
-                    $x = $x - grad * lr;
+                    $x = $x - grad * $lr;
                 }
             }
         }
@@ -406,7 +441,7 @@ impl Shape {
 
         
 
-        adam_vec!(self.dcolm, self.dcolv, self.dcol, self.color);
+        adam_vec!(self.dcolm, self.dcolv, self.dcol, self.color, lr*20.);
         // self.color = self.color - self.dcol * (lr*0.0001);
         self.dcol = vec3::new(0., 0., 0.);
 
@@ -472,11 +507,10 @@ impl Shape {
                 self.dC = Point::new(0., 0.);
             },
             Bitmap => {
-                let (bitmap_h, bitmap_w, _c) = self.bitmap.dim();
                 // self.bitmap += &(&self.dbitmap * lr); // + here because sdf_pix = 0.5 - bitmap[pix]
                 self.dbitmap *= -1.;
                 adam_ndarray!(self.dbitmapm, self.dbitmapv, self.dbitmap, self.bitmap);
-                self.dbitmap = Array3::<f32>::zeros((bitmap_h as usize, bitmap_w as usize, 1));
+                self.dbitmap.fill(0.);
             }
             _ => ()
         }
@@ -788,7 +822,7 @@ pub fn smoothstep_d(left: f32, right: f32, x: f32) -> f32 {
 
 static mut PRINT_NOW: bool = false;
 
-fn task1(save_path: &str) {
+pub fn task_sdf(save_path: &str) {
     println!("\n=== Task: 2 circles, 1 box ");
     let mut start_time = Instant::now();
 
@@ -925,7 +959,7 @@ fn task1(save_path: &str) {
     start_time = Instant::now();
 }
 
-fn task1_bitmap(save_path: &str) {
+pub fn task_bitmap(save_path: &str) {
     println!("\n=== Scene");
     let mut start_time = Instant::now();
 
@@ -1058,7 +1092,7 @@ fn task1_bitmap(save_path: &str) {
     }
 }
 
-fn small(save_path: &str) {
+pub fn task_edge_sampling(save_path: &str) {
     println!("\n=== Scene");
     let mut start_time = Instant::now();
 
@@ -1188,7 +1222,7 @@ fn small(save_path: &str) {
 
         input_texture: loadsdf::loadimage("resources/brick.jpg").to_rgb8(),
         ..Default::default()
-    }.build(true, 188, 188);
+    }.build(true, 1024, 1024);
 
     let mut circ = Shape {
         stype: ShapeType::Circle,
@@ -1344,14 +1378,192 @@ fn small(save_path: &str) {
 
 }
 
+pub fn task_sdf_sampling(save_path: &str) {
+    println!("\n=== Task SDF sampling ");
+    let mut start_time = Instant::now();
+
+    let yellow = vec3::new(255./255., 220./255., 3./255.);
+    let red = vec3::new(255./255., 0., 0.);
+    let black = vec3::new(0., 0., 0.);
+
+    let imgx = 256;
+    let imgy = imgx;
+    let mut imgbuf = image::ImageBuffer::new(imgx, imgy);
+
+    let th = 0.025;
+
+    std::fs::create_dir("anim");
+
+    // ******************** BACKWARD PASS
+
+    let refimg = loadsdf::loadimage("resources/02_reference.png");
+
+    // let mut circ = Shape {
+    //     stype: ShapeType::Circle,
+    //     C: Point::new(-0.2, 0.1),
+    //     r: 0.2,
+    //     th: th,
+    //     color: red,
+    //     no_smooth: true,
+    //     ..Default::default()
+    // };
+
+    // let mut rect = Shape {
+    //     stype: ShapeType::Rectangle,
+    //     C: Point::new(0., 0.),
+    //     w: 0.1,
+    //     h: 0.1,
+    //     th: th,
+    //     color: yellow,
+    //     no_smooth: true,
+    //     ..Default::default()
+    // };
+
+    let mut circ = Shape {
+        stype: ShapeType::Circle,
+        C: Point::new(0.2, 0.2),
+        r: 0.1,
+        th: th,
+        color: vec3::new(0.543, 0.2232, 0.42),
+        no_smooth: true,
+        ..Default::default()
+    };
+
+    let mut circ2 = Shape {
+        stype: ShapeType::Circle,
+        C: Point::new(-0.27, 0.22),
+        r: 0.12,
+        th: th,
+        color: vec3::new(0.1, 0.6, 1.),
+        no_smooth: true,
+        ..Default::default()
+    };
+
+    let mut rect = Shape {
+        stype: ShapeType::Rectangle,
+        C: Point::new(-0.19, -0.22),
+        w: 0.25,
+        h: 0.25,
+        th: th,
+        color: vec3::new(0.7, 0.7, 0.),
+        no_smooth: true,
+        ..Default::default()
+    };
+
+    let mut shapes: Vec<Shape> = Vec::new();
+    shapes.push(circ);
+    shapes.push(circ2);
+    shapes.push(rect);
+    let nshapes = shapes.len();
+
+    
+    let mut smstep: Vec<f32> = vec![0.; nshapes]; // smstep = smoothstep(-sdf)
+    let mut weight1: Vec<f32> = vec![0.; nshapes]; // weight1[i] * smstep[i] * color[i]
+    // compute d pixel/d smoothstep using postfix sum
+    let mut dstep_cum: Vec<vec3> = vec![black; nshapes];
+
+    println!("Initialization took {:?}", start_time.elapsed());
+    start_time = Instant::now();
+
+    for _it in 0..150 {
+        let mut mse: f32 = 0.;
+        for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
+            let xf = x as f32 / imgx as f32 - 0.5;
+            let yf = y as f32 / imgy as f32 - 0.5;
+            //let r = (xf / imgx as f32 * 128.0) as u8;
+            //let b = (yf / imgy as f32 * 128.0) as u8;
+
+            // again forward pass
+            let p: Point = Point::new(xf, yf);
+            let mut out_color = black;
+
+            for i in 0..nshapes {
+                let mut sdf = 0.;
+                let nsamples = 5;
+                for sample in 0..nsamples {
+                    let x_add = (sample % 2) as f32;
+                    let y_add = (sample / 2) as f32;
+                    let p_add = Point::new(
+                        rand::random::<f32>() / imgx as f32,
+                        rand::random::<f32>() / imgy as f32);
+                        // (0.25 - x_add * 0.5) / imgx as f32,
+                        // (0.25 - y_add * 0.5) / imgy as f32);
+                    let p_sample = p + p_add;
+                    sdf += shapes[i].distance_alpha(p_sample);
+                }
+
+                smstep[i] = sdf / nsamples as f32;
+                if i == 0 {
+                    weight1[i] = 1.;
+                } else {
+                    weight1[i] = 1. - weight1[i - 1] * smstep[i - 1];
+                }
+                out_color = out_color + shapes[i].color * (weight1[i] * smstep[i]);
+            }
+
+
+            // *** Compute derivatives, MSE
+            let pix = refimg.get_pixel(x, y).0;
+            let pixref = vec3::new(pix[0] as f32 / 255., pix[1] as f32 / 255., pix[2] as f32 / 255.);
+            let pixdif = out_color - pixref;
+
+            let pixmse = pixdif.dot(&pixdif); // sum of squares
+
+            // compute postfix sums from end to begin for d pixel/d smoothstep
+            dstep_cum[nshapes-1] = shapes[nshapes-1].color;
+            for i in 1..nshapes {
+                let j = nshapes - i - 1;
+                // had to derive this formula
+                dstep_cum[j] = shapes[j].color + dstep_cum[j+1] * (-smstep[j+1]);
+            }
+
+            // pass derivative to each shape
+            for i in 0..nshapes {
+                // 3 components in derivative: rgb
+                let dpixdw: vec3 = dstep_cum[i] * weight1[i];
+                let dldw = pixdif.dot(&dpixdw) * 2.; // coors are factored out of rgb channels, sum is ok
+                
+                let dpixdrgb = weight1[i] * smstep[i];
+                let drgb = pixdif * dpixdrgb;
+
+                shapes[i].backward(p, dldw, drgb);
+            }
+            
+            mse += pixmse;
+
+            
+            out_color = out_color * 255.;
+            *pixel = image::Rgb([
+                out_color.x as u8,
+                out_color.y as u8,
+                out_color.z as u8]);
+        }
+        mse = mse / imgx as f32 / imgy as f32;
+        println!("mse={:.9}", mse);
+        let mut lr = 0.002;
+        if _it > 30 {
+            lr *= 2.;
+        }
+        for i in 0..nshapes {
+            shapes[i].step(lr);
+        }
+        
+        let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
+        imgbuf.save(filename).unwrap();
+    }
+
+    println!("Rendering took {:?}", start_time.elapsed());
+    start_time = Instant::now();
+}
 
 
 fn main() {
     // let guard = pprof::ProfilerGuardBuilder::default().frequency(1000).blocklist(&["libc", "libgcc", "pthread", "vdso"]).build().unwrap();
     
     // task1("fractal");
-    // task1_bitmap("fractal");
-    small("fractal");
+    // task_bitmap("fractal");
+    // task_edge_sampling("fractal");
+    task_sdf_sampling("fractal");
 
     // if let Ok(report) = guard.report().build() {
     //     let file = File::create("flamegraph.svg").unwrap();
