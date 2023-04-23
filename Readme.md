@@ -2,6 +2,7 @@
 
 Signed Distance Field is minimal distance from a point to a shape. It allows efficient compression of fonts and binary images, and also allows interesting blending of shapes.
 
+https://iquilezles.org/articles/distfunctions2d/
 
 ## Auto differentiation
 

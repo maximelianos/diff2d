@@ -40,6 +40,10 @@ impl Point {
     pub fn normal(&self) -> Point {
         return Point::new(-self.y, self.x);
     }
+
+    pub fn abs_x(&self) -> Point {
+        return Point::new(self.x.abs(), self.y);
+    }
 }
 
 impl ops::Add<Point> for Point {
