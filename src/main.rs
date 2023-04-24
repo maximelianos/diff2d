@@ -38,6 +38,7 @@ struct Shape {
     sdf: f32,
 
     dr: f32,
+    dsdfr: f32,
     drm: f32,
     drv: f32,
     dC: Point,
@@ -348,7 +349,21 @@ impl Shape {
             Moon => {
                 let s1 = (point - self.C).len() - self.r;
                 let s2 = (point - self.B).len() - self.rb;
-                sdf = if -s1 < s2 { s1 } else { -s2 };
+                if -s1 < s2 {
+                    sdf = s1;
+                    let p = point - self.C;
+                    if p.len() > 0.0001 {
+                        self.dsdfC = -p / p.len();
+                    }
+                    self.dsdfr = -1.;
+                } else {
+                    sdf = -s2;
+                    let p = point - self.B;
+                    if p.len() > 0.0001 {
+                        self.dsdfB = p / p.len();
+                    }
+                    self.dsdfrb = 1.;
+                };
             },
             _ => panic!("Unimplemented shape")
         }
@@ -474,7 +489,18 @@ impl Shape {
                 self.drb += self.dsdfrb * dldsdf;
                 self.dsdfrs = 0.;
                 self.dsdfrb = 0.;
-            }
+            },
+            Moon => {
+                self.dC = self.dC + self.dsdfC * dldsdf;
+                self.dsdfC = Point::new(0., 0.);
+                self.dB = self.dB + self.dsdfB * dldsdf;
+                self.dsdfB = Point::new(0., 0.);
+
+                self.dr += self.dsdfr * dldsdf;
+                self.drb += self.dsdfrb * dldsdf;
+                self.dsdfr = 0.;
+                self.dsdfrb = 0.;
+            },
             _ => panic!("Unimplemented backward")
         }
         
@@ -544,7 +570,7 @@ impl Shape {
 
         
 
-        // adam_vec!(self.dcolm, self.dcolv, self.dcol, self.color, lr*20.);
+        adam_vec!(self.dcolm, self.dcolv, self.dcol, self.color, lr*20.);
         // self.color = self.color - self.dcol * (lr*0.0001);
         self.dcol = vec3::new(0., 0., 0.);
 
@@ -632,6 +658,17 @@ impl Shape {
                 adam!(self.drbm, self.drbv, self.drb, self.rb);
                 self.dC = Point::new(0., 0.);
                 self.drs = 0.;
+                self.drb = 0.;
+            },
+            Moon => {
+                adam!(self.dCm, self.dCv, self.dC, self.C);
+                adam!(self.dBm, self.dBv, self.dB, self.B);
+                self.dC = Point::new(0., 0.);
+                self.dB = Point::new(0., 0.);
+
+                adam!(self.drbm, self.drbv, self.drb, self.rb);
+                adam!(self.drm, self.drv, self.dr, self.r);
+                self.dr = 0.;
                 self.drb = 0.;
             },
             _ => ()
@@ -1685,8 +1722,11 @@ pub fn task_new_sdf(save_path: &str) {
     let yellow = vec3::new(255./255., 220./255., 3./255.);
     let red = vec3::new(255./255., 0., 0.);
     let black = vec3::new(0., 0., 0.);
+    let sky = vec3::new(142., 202., 230.)/255.;
+    let azul = vec3::new(0., 102., 230.)/255.;
+    let fur = vec3::new(230., 230., 230.)/255.;
 
-    let imgx = 128;
+    let imgx = 256;
     let imgy = imgx;
     let mut imgbuf = image::ImageBuffer::new(imgx, imgy);
 
@@ -1696,33 +1736,80 @@ pub fn task_new_sdf(save_path: &str) {
 
     // ******************** BACKWARD PASS
 
-    let refimg = loadsdf::loadimage("resources/horse.jpg");
+    // let refimg = loadsdf::loadimage("resources/moon.jpg");
+    let refimg = loadsdf::loadimage("anim/ref.jpg");
 
+    // let s: f32 = 0.5 / 7.;
     // let horse = Shape {
     //     stype: ShapeType::Horseshoe,
-    //     C: Point::new(0.1, 0.02),
-    //     rs: 0.01,
-    //     rb: 0.3,
+    //     C: Point::new(0., -2.5*s),
+    //     rs: 2.5*s,
+    //     rb: 3.5*s,
+    //     th: th,
+    //     color: sky,
+    //     ..Default::default()
+    // };
+
+    // let moon = Shape {
+    //     stype: ShapeType::Moon,
+    //     C: Point::new(0., 2.5*s),
+    //     r: 4.5*s,
+    //     B: Point::new(0., 0.),
+    //     rb: 3.5*s,
     //     th: th,
     //     color: yellow,
     //     ..Default::default()
     // };
 
+    // let star1 = Shape {
+    //     stype: ShapeType::Star5,
+    //     C: Point::new(0., -1.5*s),
+    //     rs: 0.08,
+    //     rb: 0.15,
+    //     th: th,
+    //     color: azul,
+    //     ..Default::default()
+    // };
+
+    let s: f32 = 0.5 / 7.;
+    let horse = Shape {
+        stype: ShapeType::Horseshoe,
+        C: Point::new(0., -1.5*s),
+        rs: 1.5*s,
+        rb: 4.5*s,
+        th: th,
+        color: fur,
+        ..Default::default()
+    };
+
     let moon = Shape {
         stype: ShapeType::Moon,
-        C: Point::new(0., 0.),
-        B: Point::new(0.2, 0.),
-        r: 0.5,
-        rb: 0.4,
+        C: Point::new(0.3, 0.*s),
+        r: 4.5*s,
+        B: Point::new(0., 0.5*s),
+        rb: 1.5*s,
         th: th,
-        color: yellow,
+        color: azul,
+        ..Default::default()
+    };
+
+    let star1 = Shape {
+        stype: ShapeType::Star5,
+        C: Point::new(-0.1, -0.2),
+        rs: 0.18,
+        rb: 0.35,
+        th: th,
+        color: red,
         ..Default::default()
     };
 
     let mut shapes: Vec<Shape> = Vec::new();
-    // shapes.push(circ);
-    // shapes.push(circ2);
+    shapes.push(star1);
+    shapes.push(horse);
     shapes.push(moon);
+    
+    
+    
     let nshapes = shapes.len();
 
     
@@ -1734,7 +1821,7 @@ pub fn task_new_sdf(save_path: &str) {
     println!("Initialization took {:?}", start_time.elapsed());
     start_time = Instant::now();
 
-    for _it in 0..1 {
+    for _it in 0..120 {
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
             let xf = x as f32 / imgx as f32 - 0.5;
@@ -1772,33 +1859,33 @@ pub fn task_new_sdf(save_path: &str) {
 
 
             // *** Compute derivatives, MSE
-            // let pix = refimg.get_pixel(x, y).0;
-            // let pixref = vec3::new(pix[0] as f32 / 255., pix[1] as f32 / 255., pix[2] as f32 / 255.);
-            // let pixdif = out_color - pixref;
+            let pix = refimg.get_pixel(x, y).0;
+            let pixref = vec3::new(pix[0] as f32 / 255., pix[1] as f32 / 255., pix[2] as f32 / 255.);
+            let pixdif = out_color - pixref;
 
-            // let pixmse = pixdif.dot(&pixdif); // sum of squares
+            let pixmse = pixdif.dot(&pixdif); // sum of squares
 
-            // // compute postfix sums from end to begin for d pixel/d smoothstep
-            // dstep_cum[nshapes-1] = shapes[nshapes-1].color;
-            // for i in 1..nshapes {
-            //     let j = nshapes - i - 1;
-            //     // had to derive this formula
-            //     dstep_cum[j] = shapes[j].color + dstep_cum[j+1] * (-smstep[j+1]);
-            // }
+            // compute postfix sums from end to begin for d pixel/d smoothstep
+            dstep_cum[nshapes-1] = shapes[nshapes-1].color;
+            for i in 1..nshapes {
+                let j = nshapes - i - 1;
+                // had to derive this formula
+                dstep_cum[j] = shapes[j].color + dstep_cum[j+1] * (-smstep[j+1]);
+            }
 
-            // // pass derivative to each shape
-            // for i in 0..nshapes {
-            //     // 3 components in derivative: rgb
-            //     let dpixdw: vec3 = dstep_cum[i] * weight1[i];
-            //     let dldw = pixdif.dot(&dpixdw) * 2.; // coors are factored out of rgb channels, sum is ok
+            // pass derivative to each shape
+            for i in 0..nshapes {
+                // 3 components in derivative: rgb
+                let dpixdw: vec3 = dstep_cum[i] * weight1[i];
+                let dldw = pixdif.dot(&dpixdw) * 2.; // coors are factored out of rgb channels, sum is ok
                 
-            //     let dpixdrgb = weight1[i] * smstep[i];
-            //     let drgb = pixdif * dpixdrgb;
+                let dpixdrgb = weight1[i] * smstep[i];
+                let drgb = pixdif * dpixdrgb;
 
-            //     shapes[i].backward(p, dldw, drgb);
-            // }
+                shapes[i].backward(p, dldw, drgb);
+            }
             
-            // mse += pixmse;
+            mse += pixmse;
 
             
             out_color = out_color * 255.;
@@ -1807,15 +1894,15 @@ pub fn task_new_sdf(save_path: &str) {
                 out_color.y as u8,
                 out_color.z as u8]);
         }
-        // mse = mse / imgx as f32 / imgy as f32;
-        // println!("mse={:.9}", mse);
-        // let mut lr = 0.001;
-        // for i in 0..nshapes {
-        //     shapes[i].step(lr);
-        // }
+        mse = mse / imgx as f32 / imgy as f32;
+        println!("mse={:.9}", mse);
+        let mut lr = 0.002;
+        for i in 0..nshapes {
+            shapes[i].step(lr);
+        }
         
         let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
-        imgbuf.save(filename).unwrap();
+        // imgbuf.save(filename).unwrap();
     }
 
     println!("Rendering took {:?}", start_time.elapsed());
