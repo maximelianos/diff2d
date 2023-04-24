@@ -1737,7 +1737,7 @@ pub fn task_new_sdf(save_path: &str) {
     // ******************** BACKWARD PASS
 
     // let refimg = loadsdf::loadimage("resources/moon.jpg");
-    let refimg = loadsdf::loadimage("anim/ref.jpg");
+    let refimg = loadsdf::loadimage("resources/moon_stars.jpg");
 
     // let s: f32 = 0.5 / 7.;
     // let horse = Shape {
@@ -1902,7 +1902,7 @@ pub fn task_new_sdf(save_path: &str) {
         }
         
         let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
-        // imgbuf.save(filename).unwrap();
+        imgbuf.save(filename).unwrap();
     }
 
     println!("Rendering took {:?}", start_time.elapsed());
