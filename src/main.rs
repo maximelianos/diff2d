@@ -3,13 +3,12 @@
 mod loadsdf;
 mod libdif;
 mod point;
-use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap}, time::Instant, rc::Rc, cell::RefCell, borrow::Borrow, fs::File};
+use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap}, time::Instant, rc::Rc, cell::RefCell, borrow::Borrow, fs::{File, self}};
 use rand;
 use nalgebra as na;
 use ndarray::{Array3, Array};
 
 use image::{GrayImage, GenericImageView, RgbImage};
-use libdif::{DGraph, Graph, Dp, GRAPH};
 use point::Point;
 
 #[derive(Default, Copy, Clone, Debug, PartialEq)]
@@ -952,7 +951,9 @@ enum SceneType {
     Flame,
     Fox,
     Shapes,
-    Art
+    Art,
+    ACDC,
+    Portal,
 }
 
 pub fn smoothstep(left: f32, right: f32, x: f32) -> f32 {
@@ -982,7 +983,7 @@ pub fn smoothstep_d(left: f32, right: f32, x: f32) -> f32 {
 static mut PRINT_NOW: bool = false;
 
 pub fn task_sdf(save_path: &str) {
-    println!("\n=== Task: 2 circles, 1 box ");
+    println!("\n=== Scene: 2 circles, 1 box ");
     let mut start_time = Instant::now();
 
     let yellow = vec3::new(255./255., 220./255., 3./255.);
@@ -995,7 +996,7 @@ pub fn task_sdf(save_path: &str) {
 
     let th = 0.025;
 
-    std::fs::create_dir("anim");
+    fs::create_dir("anim");
 
     // ******************** BACKWARD PASS
 
@@ -1044,7 +1045,8 @@ pub fn task_sdf(save_path: &str) {
     println!("Initialization took {:?}", start_time.elapsed());
     start_time = Instant::now();
 
-    for _it in 0..60 {
+    let iterations = 60;
+    for _it in 0..iterations {
         let mut mse: f32 = 0.;
         for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
             let xf = x as f32 / imgx as f32 - 0.5;
@@ -1104,7 +1106,9 @@ pub fn task_sdf(save_path: &str) {
                 out_color.z as u8]);
         }
         mse = mse / imgx as f32 / imgy as f32;
-        println!("mse={:.9}", mse);
+        if _it % 10 == 0 {
+            println!("mse={:.9}", mse);
+        }
         let mut lr = 0.01;
         for i in 0..nshapes {
             shapes[i].step(lr);
@@ -1118,12 +1122,14 @@ pub fn task_sdf(save_path: &str) {
     start_time = Instant::now();
 }
 
-pub fn task_bitmap(save_path: &str) {
-    println!("\n=== Scene");
+fn task_bitmap(scene: SceneType, save_path: &str) {
+    println!("\n=== Scene: SDF bitmap {:?}", scene);
     let mut start_time = Instant::now();
 
     let yellow = vec3::new(255./255., 220./255., 3./255.);
     let red = vec3::new(255./255., 0., 0.);
+    let green = vec3::new(0./255., 255./255., 0.);
+    let blue = vec3::new(0./255., 0./255., 255./255.);
     let black = vec3::new(0., 0., 0.);
 
     let imgx = 1024;
@@ -1132,36 +1138,79 @@ pub fn task_bitmap(save_path: &str) {
 
     let th = 0.025;
 
-    std::fs::create_dir("anim");
+    fs::create_dir("anim");
 
     // ******************** BACKWARD PASS
 
-    let refimg = loadsdf::loadimage("resources/ACDC_logo.jpg");
-
-    let mut bmp1 = Shape {
-        stype: ShapeType::Bitmap,
-        C: Point::new(-0.5, -0.5),
-        w: 1.,
-        h: 1.,
-        field_scale: 1.,
-        test_bitmap: true,
-        th: th,
-        color: red,
-        ..Default::default()
-    }.build_bitmap(64, 64);
-
-
+    let refimg: image::DynamicImage;
     let mut shapes: Vec<Shape> = Vec::new();
-    shapes.push(bmp1);
-    let nshapes = shapes.len();
+    if scene == SceneType::ACDC  {
+        refimg = loadsdf::loadimage("resources/ACDC_logo.jpg");
 
+        let mut bmp1 = Shape {
+            stype: ShapeType::Bitmap,
+            C: Point::new(-0.5, -0.5),
+            w: 1.,
+            h: 1.,
+            field_scale: 1.,
+            test_bitmap: true,
+            th: th,
+            color: red,
+            ..Default::default()
+        }.build_bitmap(64, 64);
+
+        shapes.push(bmp1);
+    } else {
+        refimg = loadsdf::loadimage("resources/portal.jpg"); // ACDC_logo.jpg
+
+        let mut bmp1 = Shape {
+            stype: ShapeType::Bitmap,
+            C: Point::new(-0.5, -0.5),
+            w: 1.,
+            h: 1.,
+            field_scale: 1.,
+            test_bitmap: true,
+            th: th,
+            color: red,
+            ..Default::default()
+        }.build_bitmap(64, 64);
+
+        let mut bmp2 = Shape {
+            stype: ShapeType::Bitmap,
+            C: Point::new(-0.5, -0.5),
+            w: 1.,
+            h: 1.,
+            field_scale: 1.,
+            test_bitmap: true,
+            th: th,
+            color: green,
+            ..Default::default()
+        }.build_bitmap(64, 64);
+
+        let mut bmp3 = Shape {
+            stype: ShapeType::Bitmap,
+            C: Point::new(-0.5, -0.5),
+            w: 1.,
+            h: 1.,
+            field_scale: 1.,
+            test_bitmap: true,
+            th: th,
+            color: blue,
+            ..Default::default()
+        }.build_bitmap(64, 64);
+
+        shapes.push(bmp1);
+        shapes.push(bmp2);
+        shapes.push(bmp3);
+    }
+    let nshapes = shapes.len();
     
     let mut smstep: Vec<f32> = vec![0.; nshapes]; // smstep = smoothstep(-sdf)
     let mut weight1: Vec<f32> = vec![0.; nshapes]; // weight1[i] * smstep[i] * color[i]
     // compute d pixel/d smoothstep using postfix sum
     let mut dstep_cum: Vec<vec3> = vec![black; nshapes];
 
-    let iterations = 100;
+    let iterations = 200;
     for _it in 0..iterations {
         // let mut msed = Dp::const_f(0.);
         let mut mse: f32 = 0.;
@@ -1225,8 +1274,10 @@ pub fn task_bitmap(save_path: &str) {
                 out_color.z as u8]);
         }
         mse = mse / imgx as f32 / imgy as f32;
-        println!("mse={:.9}", mse);
-        let mut lr = 0.02;
+        if _it % 20 == 0 {
+            println!("mse={:.9}", mse);
+        }
+        let mut lr = 0.01;
         for i in 0..nshapes {
             shapes[i].step(lr);
         }
@@ -1249,10 +1300,12 @@ pub fn task_bitmap(save_path: &str) {
         }
         
     }
+
+    println!("Rendering took {:?}", start_time.elapsed());
 }
 
 pub fn task_edge_sampling(save_path: &str) {
-    println!("\n=== Scene");
+    println!("\n=== Scene: edge sampling");
     let mut start_time = Instant::now();
 
     let yellow = vec3::new(255./255., 220./255., 3./255.);
@@ -1266,92 +1319,7 @@ pub fn task_edge_sampling(save_path: &str) {
     let mut imgbuf = image::ImageBuffer::new(imgx, imgy);
     
     let th = 0.025;
-    std::fs::create_dir("anim");
-
-    let mut mesh: TriangleMesh = TriangleMesh { 
-        // verticies: vec![Point::new(-0.25, -0.25), Point::new(0.25, -0.25), Point::new(-0.25, 0.25)], 
-        // indices: vec![0, 1, 2], 
-        // colors: vec![red, red, red],
-        // is_textured: vec![false],
-        // tc: vec![Point::new(0., 0.), Point::new(1., 0.), Point::new(1., 1.)],
-
-        verticies: vec![Point::new(-0.5, -0.5), Point::new(-0., -0.5), Point::new(-0.5, 0.),
-            Point::new(-0., -0.5), Point::new(0.5, -0.5), Point::new(-0., -0.),
-            Point::new(-0.5, -0.), Point::new(-0., 0.), Point::new(-0.5, 0.5)], 
-        indices: vec![0, 1, 2,
-            3, 4, 5,
-            6, 7, 8], 
-        colors: vec![red, red, red, red, red, red, red, red, red,],
-        is_textured: vec![false, false, false],
-        tc: vec![Point::new(0., 0.), Point::new(1., 0.), Point::new(0., 1.),
-            Point::new(0., 0.), Point::new(1., 0.), Point::new(0., 1.),
-            Point::new(0., 0.), Point::new(1., 0.), Point::new(0., 1.)],
-
-        input_texture: loadsdf::loadimage("resources/brick.jpg").to_rgb8(),
-        ..Default::default()
-    }.build(false, 0, 0);
-
-
-    {
-        let mut shapes: Vec<Shape> = Vec::new();
-        let nshapes = shapes.len();
-
-        let mut smstep: Vec<f32> = vec![0.; nshapes]; // smstep = smoothstep(-sdf)
-        let mut weight1: Vec<f32> = vec![0.; nshapes]; // weight1[i] * smstep[i] * color[i]
-
-        // Create a new ImgBuf with width: imgx and height: imgy
-        
-        println!("Initialization took {:?}", start_time.elapsed());
-        start_time = Instant::now();
-
-        // ******************** FORWARD PASS
-        
-
-        // Iterate over the coordinates and pixels of the image
-        for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
-            let xf = x as f32 / imgx as f32 - 0.5;
-            let yf = y as f32 / imgy as f32 - 0.5;
-            //let r = (xf / imgx as f32 * 128.0) as u8;
-            //let b = (yf / imgy as f32 * 128.0) as u8;
-
-            let p: Point = Point::new(xf, yf);
-            let mut out_color = black;
-
-            // let sdf = circ.distance(p);
-            // let w = smoothstep(0., th, -sdf);
-            for i in 0..nshapes {
-                smstep[i] = shapes[i].distance_alpha(p);
-                if i == 0 {
-                    weight1[i] = 1.;
-                } else {
-                    weight1[i] = 1. - weight1[i - 1] * smstep[i - 1];
-                }
-                out_color = out_color + shapes[i].color * (weight1[i] * smstep[i]);
-            }
-
-            // *** Mesh
-            
-            let mut mesh_color = black;
-            if mesh.render(p, &mut mesh_color, true, vec3::default()) {
-                out_color = mesh_color;
-            }
-
-            
-            out_color = out_color * 255.;
-            *pixel = image::Rgb([
-                out_color.x as u8,
-                out_color.y as u8,
-                out_color.z as u8]);
-        }
-
-        println!("Rendering took {:?}", start_time.elapsed());
-        start_time = Instant::now();
-
-        // Save the image as “fractal.png”, the format is deduced from the path
-        // imgbuf.save("anim/reference.png");
-
-        // return;
-    }
+    fs::create_dir("anim");
 
     // ******************** BACKWARD PASS
 
@@ -1379,7 +1347,7 @@ pub fn task_edge_sampling(save_path: &str) {
             Point::new(0., 0.), Point::new(1., 0.), Point::new(0., 1.),
             Point::new(0., 0.), Point::new(1., 0.), Point::new(0., 1.)],
 
-        input_texture: loadsdf::loadimage("resources/brick.jpg").to_rgb8(),
+        // input_texture: loadsdf::loadimage("resources/brick.jpg").to_rgb8(),
         ..Default::default()
     }.build(true, 1024, 1024);
 
@@ -1517,7 +1485,9 @@ pub fn task_edge_sampling(save_path: &str) {
                     out_color.z as u8]);
             }
             mse = mse / imgx as f32 / imgy as f32;
-            println!("MSE={:.3}", mse);
+            if _it % 10 == 0 {
+                println!("mse={:.9}", mse);
+            }
 
             let lr = 0.01;
             mesh.step(lr);
@@ -1538,7 +1508,7 @@ pub fn task_edge_sampling(save_path: &str) {
 }
 
 pub fn task_sdf_sampling(save_path: &str) {
-    println!("\n=== Task SDF sampling ");
+    println!("\n=== Scene: SDF edge sampling");
     let mut start_time = Instant::now();
 
     let yellow = vec3::new(255./255., 220./255., 3./255.);
@@ -1551,32 +1521,11 @@ pub fn task_sdf_sampling(save_path: &str) {
 
     let th = 0.025;
 
-    std::fs::create_dir("anim");
+    fs::create_dir("anim");
 
     // ******************** BACKWARD PASS
 
     let refimg = loadsdf::loadimage("resources/02_reference.png");
-
-    // let mut circ = Shape {
-    //     stype: ShapeType::Circle,
-    //     C: Point::new(-0.2, 0.1),
-    //     r: 0.2,
-    //     th: th,
-    //     color: red,
-    //     no_smooth: true,
-    //     ..Default::default()
-    // };
-
-    // let mut rect = Shape {
-    //     stype: ShapeType::Rectangle,
-    //     C: Point::new(0., 0.),
-    //     w: 0.1,
-    //     h: 0.1,
-    //     th: th,
-    //     color: yellow,
-    //     no_smooth: true,
-    //     ..Default::default()
-    // };
 
     let mut circ = Shape {
         stype: ShapeType::Circle,
@@ -1698,7 +1647,9 @@ pub fn task_sdf_sampling(save_path: &str) {
                 out_color.z as u8]);
         }
         mse = mse / imgx as f32 / imgy as f32;
-        println!("mse={:.9}", mse);
+        if _it % 20 == 0 {
+            println!("mse={:.9}", mse);
+        }
         let mut lr = 0.002;
         if _it > 30 {
             lr *= 2.;
@@ -1715,8 +1666,8 @@ pub fn task_sdf_sampling(save_path: &str) {
     start_time = Instant::now();
 }
 
-pub fn task_new_sdf(save_path: &str) {
-    println!("\n=== Task SDF sampling ");
+pub fn task_complex_sdf(save_path: &str) {
+    println!("\n=== Scene: complex SDF");
     let mut start_time = Instant::now();
 
     let yellow = vec3::new(255./255., 220./255., 3./255.);
@@ -1732,7 +1683,7 @@ pub fn task_new_sdf(save_path: &str) {
 
     let th = 0.025;
 
-    std::fs::create_dir("anim");
+    fs::create_dir("anim");
 
     // ******************** BACKWARD PASS
 
@@ -1778,7 +1729,7 @@ pub fn task_new_sdf(save_path: &str) {
         rs: 1.5*s,
         rb: 4.5*s,
         th: th,
-        color: fur,
+        color: yellow,
         ..Default::default()
     };
 
@@ -1807,9 +1758,6 @@ pub fn task_new_sdf(save_path: &str) {
     shapes.push(star1);
     shapes.push(horse);
     shapes.push(moon);
-    
-    
-    
     let nshapes = shapes.len();
 
     
@@ -1895,7 +1843,9 @@ pub fn task_new_sdf(save_path: &str) {
                 out_color.z as u8]);
         }
         mse = mse / imgx as f32 / imgy as f32;
-        println!("mse={:.9}", mse);
+        if _it % 10 == 0 {
+            println!("mse={:.9}", mse);
+        }
         let mut lr = 0.002;
         for i in 0..nshapes {
             shapes[i].step(lr);
@@ -1913,11 +1863,12 @@ pub fn task_new_sdf(save_path: &str) {
 fn main() {
     // let guard = pprof::ProfilerGuardBuilder::default().frequency(1000).blocklist(&["libc", "libgcc", "pthread", "vdso"]).build().unwrap();
     
-    // task1("fractal");
-    // task_bitmap("fractal");
-    // task_edge_sampling("fractal");
-    // task_sdf_sampling("fractal");
-    task_new_sdf("fractal");
+    // task_sdf("fractal"); fs::rename("anim", "anim_sdf");
+    // task_bitmap(SceneType::ACDC, "fractal"); fs::rename("anim", "anim_ACDC");
+    // task_edge_sampling("fractal"); fs::rename("anim", "anim_edge_sampling");
+    // task_sdf_sampling("fractal"); fs::rename("anim", "anim_sdf_sampling");
+    task_complex_sdf("fractal"); fs::rename("anim", "anim_complex_sdf");
+    // task_bitmap(SceneType::Portal, "fractal"); fs::rename("anim", "anim_portal");
 
     // if let Ok(report) = guard.report().build() {
     //     let file = File::create("flamegraph.svg").unwrap();
