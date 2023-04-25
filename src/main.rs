@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![allow(warnings)]
 mod loadsdf;
-mod libdif;
+mod taskdif;
 mod point;
 use std::{ops::{self, Deref}, f32::consts::PI, collections::{VecDeque, HashMap}, time::Instant, rc::Rc, cell::RefCell, borrow::Borrow, fs::{File, self}};
 use rand;
@@ -728,6 +728,7 @@ impl TriangleMesh {
             for i in 0..h {
                 for j in 0..w {
                     for c in 0..3 {
+                        // bitmap.get_pixel(x as u32, y as u32).0 -> [u8; channels]
                         self.texture[[i, j, c]] = self.input_texture.get_pixel(j as u32, i as u32).0[c] as f32 / 255.;
                     }
                 }
@@ -945,13 +946,6 @@ impl TriangleMesh {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum SceneType {
-    All,
-    Letters,
-    Bird,
-    Flame,
-    Fox,
-    Shapes,
-    Art,
     ACDC,
     Portal,
 }
@@ -1863,12 +1857,13 @@ pub fn task_complex_sdf(save_path: &str) {
 fn main() {
     // let guard = pprof::ProfilerGuardBuilder::default().frequency(1000).blocklist(&["libc", "libgcc", "pthread", "vdso"]).build().unwrap();
     
-    // task_sdf("fractal"); fs::rename("anim", "anim_sdf");
-    // task_bitmap(SceneType::ACDC, "fractal"); fs::rename("anim", "anim_ACDC");
-    // task_edge_sampling("fractal"); fs::rename("anim", "anim_edge_sampling");
-    // task_sdf_sampling("fractal"); fs::rename("anim", "anim_sdf_sampling");
+    task_sdf("fractal"); fs::rename("anim", "anim_sdf");
+    task_bitmap(SceneType::ACDC, "fractal"); fs::rename("anim", "anim_ACDC");
+    task_edge_sampling("fractal"); fs::rename("anim", "anim_edge_sampling");
+    task_sdf_sampling("fractal"); fs::rename("anim", "anim_sdf_sampling");
     task_complex_sdf("fractal"); fs::rename("anim", "anim_complex_sdf");
-    // task_bitmap(SceneType::Portal, "fractal"); fs::rename("anim", "anim_portal");
+    taskdif::task_autodiff("fractal"); fs::rename("anim", "anim_autodif");
+    task_bitmap(SceneType::Portal, "fractal"); fs::rename("anim", "anim_portal");
 
     // if let Ok(report) = guard.report().build() {
     //     let file = File::create("flamegraph.svg").unwrap();

@@ -1,34 +1,49 @@
-# Differentiable 2D render
+# Differentiable 2D SDF render
 
 Signed Distance Field is minimal distance from a point to a shape. It allows efficient compression of fonts and binary images, and also allows interesting blending of shapes.
 
+In differentiable rendering the scene parameters are optimized by minimizing Mean Squared Error with a reference image.
+
+## Features
+* Analytical SDF forward and backward rendering
+ * Drawing and differentiating SDF by shape parameters for circle, rectangle, triangle, bitmap SDF. Geometric and color parameters are optimized
+ * More complex SDF: 5-angled star, horseshoe, moon
+ * Adam optimizer
+ * Differentiated alpha blending
+ * Bitmap SDF is optimized per-pixel and is single-color. Multiple bitmaps allow multi-color SDF by using differentiated alpha blending
+ * Fast derivatives computed by hand
+ * Slow automatic self-written differetiation with forward and backward passes
+* Textured mesh edge sampling - differentiation w.r.t. texture pixels and triangle positions using Reynolds theorem
+* SDF edge sampling, same approach as with textured mesh
 
 
 ## Auto differentiation
 
+Using forward and backward pass, construct a computation graph in runtime and traverse verticies in same order backward, computing the derivative of loss function w.r.t. to each intermediate node using chain rule.
+
+Example of such graph:
+
 <img src=diagram-20230329.svg width=800>
 
-Dtype - scalar, matrix
-OpType - +, -, *
-struct D - derivable
-struct Dp - pointer to D
-graph - computational graph
+Important steps in implementation:
 
-700 MB per 10 000 000 objects in graph
+```
+OpType: a+b, a-b, a*b, a/b, -a, sqrt(a), a^2, smoothstep(a)
+struct D: differentiable
+struct Dp: pointer to D
+graph: computational graph
+```
 
-Bugs
-1) Simple BFS results in incorrect gradients
-2) const values are deleted on backward and result in dangling references
+Memory consumption: 700 MB per 10 000 000 nodes in graph. Problems found:
+1) BFS backward traversal results in incorrect gradient (fixed, traverse in order of appending to graph)
+2) const values are deleted on backward and result in dangling references from intermediate nodes (not fixed, need to create const values on each forward pass)
 
 convert -delay 4 -loop 0 *.jpg myimage.gif
 
 convert *.jpg -coalesce -duplicate 1,-2-1 -quiet -layers OptimizePlus  -loop 0 patrol_cycle.gif
 
-## Derivative
+ffmpeg -framerate 10 -f image2 -pattern_type glob -i '*.jpg' -c:v libx264 -preset veryslow -crf 10 -b:v 400K -pix_fmt yuv420p output.mp4
 
-$$ I_{ijc} = 1 \cdot step_1 * RGB_{c1} + \\ (1-step_1) step_2 * RGB_{c2} + \\ (1-(1-step_1)step_2)step_3 * RGB_{c3} + \ldots $$
-$$ \frac{dI_{ijc}}{dstep_1} = wstep_1 (1\cdot RGB_{c1} + (-step_2)\cdot S_2 ) $$
-$$ S_2 = 1\cdot RGB_{c2} + (-step_3)RGB_{c3} + (-step_3)(-step_4)RGB_{c4} +\ldots + (-step_3)(-step_4)\ldots (-step_n)RGB_{cn} $$
 
 ## SDF edge sampling
 
@@ -43,7 +58,7 @@ $$ <n, \frac{dp}{dr}> = 1 $$
 
 ## Complex SDF
 
-https://iquilezles.org/articles/distfunctions2d/
+Shapes look like https://iquilezles.org/articles/distfunctions2d/, but formulas was derived by me.
 
 5-angled Star
 
@@ -74,6 +89,33 @@ $$ dcross / drb = -(p-s)_y(-\sin\alpha) + (p-s)_x\cos\alpha $$
 $$ dlen / drb = \frac{1}{2len} (2(b-s)_x\frac{db_x}{drb} + 2(b-s)_y\frac{db_y}{drb} ) $$
 
 As with small radius, put $dcross$ and $dlen$ into $dSDF/drb$.
+
+
+## Files
+* Rust sources are src/main.rs, src/loadsdf.rs, src/taskdif.rs and src/taskdif/*
+* Cargo.toml - dependecies
+* resources/ - precomputed reference images, textures
+
+## Implementation
+Written from scratch in Rust. Implements basic 2D geometry: 
+* Point struct (which serves as a vector), implemented dot product, cross product, projection of one vector onto another, rotation
+* Shape struct for all shapes - analytical, bitmap SDF. Scaling and translation is not implemented. For storage and diff of vectors Point and nalgebra::Vector3 package are used. For image storage ndarray::Array3 package is used.
+* Shape::backward sums dMSE/dS for parameters of shape, Shape::step applies Adam or other optimizer
+* TriangleMesh defines triangle positions and texture (uv) coordinates. ::render is used for both forward and backward passes, for differentiation on the edge of triangles. ::step applies the optimizer to positions and texture pixels.
+
+## Compile and run
+Project was developed on Ubuntu OS, using Rust compiler rustc 1.67.1. Compile and run:
+```
+cargo build --release && ./target/release/diff2d
+```
+Cargo should install Rust dependencies. Rendered images will be saved to working directory. Implemented scenes:
+* SDF diff
+* Bitmap SDF diff, ACDC logo
+* Mesh texture and edge sampling
+* SDF edge sampling
+* Complex SDF
+* Auto diff, simple scene
+* Multiple image SDF, Portal logo
 
 
 ## References
@@ -115,35 +157,3 @@ https://github.com/rust-ndarray/ndarray/blob/master/README-quick-start.md
 
 ndarray sqrt
 https://docs.rs/ndarray/0.13.0/ndarray/doc/ndarray_for_numpy_users/index.html
-
-## Changelog
-
-v1
-* Draw a circle, optimize its position and color
-* 1 sample per pixel
-* Add dif.rs executable, implement autodiff for scalars with simple operations
-
-## Features
-
-
-## Implementation
-Written from scratch in Rust. Implements basic 2D geometry: 
-* Point struct (which serves as a vector), implemented dot product, cross product, projection of one vector onto another, rotation
-* Shape struct for all shapes - both analytical, loaded SDF from PNG or computed from binary image via BFS graph algorithm
-* ShapeTransform struct, applies scaling, rotation, translation (in this order). ShapeTransform::apply actually computes inverse transform to go from desired point to local shape space. Scaling is also applied to SDF values
-* ShapeType denotes analytical shapes (circle, rectangle) or bitmap - SDF loaded from PNG file or computed from binary image
-
-
-## Files
-* Rust sources are src/main.rs and src/loadsdf.rs
-* Cargo.toml - dependecies
-* resources/ - SDF and images in png format
-
-## Compile and run
-Project was developed on Ubuntu OS, using Rust compiler rustc 1.67.1. Compile and run:
-```
-cargo build --release && ./target/release/sdf
-```
-Cargo should install Rust dependencies. Rendered images will be saved to working directory. Implemented scenes:
-
-
