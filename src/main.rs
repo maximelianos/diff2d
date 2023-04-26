@@ -1846,7 +1846,7 @@ pub fn task_complex_sdf(save_path: &str) {
         }
         
         let filename: String = format!("anim/{}{:0>3}.jpg", save_path, _it);
-        imgbuf.save(filename).unwrap();
+        image::imageops::resize(&imgbuf, 128, 128, image::imageops::Gaussian).save(filename).unwrap();
     }
 
     println!("Rendering took {:?}", start_time.elapsed());
