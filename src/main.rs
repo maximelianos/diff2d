@@ -1343,7 +1343,7 @@ pub fn task_edge_sampling(save_path: &str) {
 
         // input_texture: loadsdf::loadimage("resources/brick.jpg").to_rgb8(),
         ..Default::default()
-    }.build(true, 1024, 1024);
+    }.build(true, 32, 32);
 
     let mut circ = Shape {
         stype: ShapeType::Circle,
@@ -1493,10 +1493,18 @@ pub fn task_edge_sampling(save_path: &str) {
             imgbuf.save(filename);
         }
 
-        println!("Rendering took {:?}", start_time.elapsed());
-        start_time = Instant::now();
+        // *** Save texture
+        let (h, w, _c) = mesh.texture.dim();
+        let mut img: RgbImage = image::ImageBuffer::new(w as u32, h as u32);
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            *pixel = image::Rgb([
+                (mesh.texture[[y as usize, x as usize, 0]] * 255.) as u8,
+                (mesh.texture[[y as usize, x as usize, 1]] * 255.) as u8,
+                (mesh.texture[[y as usize, x as usize, 2]] * 255.) as u8]);
+        }
+        img.save("anim/texture.png");
 
-        return;
+        println!("Rendering took {:?}", start_time.elapsed());
     }
 
 }

@@ -24,6 +24,8 @@ In differentiable rendering the scene parameters are optimized by minimizing Mea
 
 <img src=pictures/mesh-divergence.webp width=200><img src=pictures/sdf-sampling.webp width=200>
 
+The mesh edge sampling optimization works only if texture learning rate is lowered while positions are optimized. Over time it diverges, also if verticies fall outside the screen, they cannot return and decrease effective texture area.
+
 ## Auto differentiation
 
 Using forward and backward pass, construct a computation graph in runtime and traverse verticies in same order backward, computing the derivative of loss function w.r.t. to each intermediate node using chain rule.
@@ -144,6 +146,16 @@ ffmpeg -framerate 10 -f image2 -pattern_type glob -i '*.jpg' -c:v libx264 -prese
 
 ffmpeg -framerate 20 -pattern_type glob -i '*.jpg' -c:v libwebp -loop 0  -q:v 80 output.webp
 ```
+
+## Mesh edge sampling performance
+
+Due to unstable optimization, very large textures harm loss and decrease runtime. Loss is final MSE, lower is better.
+
+| optimized texture size  | loss | time, ms/it|
+| - | - | - |
+| 32x32  | 0.0049 | 9.6 |
+| 128x128  | 0.0046 | 10 |
+| 1024x1024  | 0.0055 | 45 |
 
 ## References
 SDF
