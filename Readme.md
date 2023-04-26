@@ -1,5 +1,7 @@
 # Differentiable 2D SDF render
 
+https://github.com/maximelianos/diff2d
+
 Signed Distance Field is minimal distance from a point to a shape. It allows efficient compression of fonts and binary images, and also allows interesting blending of shapes.
 
 In differentiable rendering the scene parameters are optimized by minimizing Mean Squared Error with a reference image.
