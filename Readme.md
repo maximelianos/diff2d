@@ -18,13 +18,13 @@ In differentiable rendering the scene parameters are optimized by minimizing Mea
 * Textured mesh edge sampling - differentiation w.r.t. texture pixels and triangle positions using Reynolds theorem
 * SDF edge sampling, same approach as with textured mesh
 
-<img src=pictures/sgdmomentum.gif width=200><img src=pictures/adam.gif width=200>
+<img src=pictures/sgdmomentum.gif width=300> <img src=pictures/adam.gif width=300>
 
-<img src=pictures/tri.gif width=200><img src=pictures/tricolor.gif width=200>
+<img src=pictures/tri.gif width=300> <img src=pictures/tricolor.gif width=300>
 
-<img src=pictures/sdf.webp width=200><img src=pictures/complex-sdf.webp width=200>
+<img src=pictures/sdf.webp width=300> <img src=pictures/complex-sdf.webp width=300>
 
-<img src=pictures/mesh-divergence.webp width=200><img src=pictures/sdf-sampling.webp width=200>
+<img src=pictures/mesh-divergence.webp width=300> <img src=pictures/sdf-sampling.webp width=300>
 
 The mesh edge sampling optimization works only if texture learning rate is lowered while positions are optimized. Over time it diverges, also if verticies fall outside the screen, they cannot return and decrease effective texture area.
 
